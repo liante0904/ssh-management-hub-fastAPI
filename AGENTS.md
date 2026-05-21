@@ -58,7 +58,7 @@ internal.management-hub/
 
 | Container | Role |
 |-----------|------|
-| `ssh-management-hub-prod` | Management Hub API (이 프로젝트) |
+| `ssh-management-hub-fastapi-prod` | Management Hub API (이 프로젝트) |
 | `management-nginx` | Management Hub 전용 리버스 프록시 |
 | `internal-nginx` | 메인 도메인 인그레스 (private-hub 소속) |
 | `main-postgres` | 메인 DB (`ssh_reports_hub`) |

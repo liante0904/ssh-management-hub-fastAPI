@@ -2,7 +2,7 @@
 services:
   fastapi:
     build: .
-    container_name: ssh-management-hub-dev
+    container_name: ssh-management-hub-fastapi-dev
     ports:
       - "8003:8000"
     volumes:

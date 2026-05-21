@@ -70,7 +70,7 @@ python3 ~/secrets/generate_env.py management-hub
 
 ```bash
 # oci에서 internal-nginx 설정 편집
-# /admin/ → ssh-management-hub-prod:8000
+# /admin/ → ssh-management-hub-fastapi-prod:8000
 ```
 
 ---
@@ -112,7 +112,7 @@ GitHub Actions: Deploy
   └── docker compose up -d --force-recreate
   │
   ▼
-oci: ssh-management-hub-prod (port 8003)
+oci: ssh-management-hub-fastapi-prod (port 8003)
   └── internal-nginx → /admin/* → :8000
 ```
 

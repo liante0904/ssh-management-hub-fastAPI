@@ -1,5 +1,5 @@
 [project]
-name = "ssh-management-hub"
+name = "ssh-management-hub-fastapi"
 version = "0.1.0"
 description = "Management Hub - 통합 데이터 관리 및 후처리 API"
 requires-python = ">=3.12"
