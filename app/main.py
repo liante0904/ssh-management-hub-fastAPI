@@ -68,8 +68,10 @@ async def health_check():
 async def login(body: LoginRequest):
     """JWT Secret Key를 입력받아 admin 토큰 발급"""
     if not JWT_SECRET_KEY:
+        logger.error("Login failed: JWT_SECRET_KEY not configured")
         raise HTTPException(status_code=503, detail="JWT secret not configured")
     if body.secret != JWT_SECRET_KEY:
+        logger.warning(f"Login failed: Invalid secret key attempt. (Expected first 4 chars: {JWT_SECRET_KEY[:4]}...)")
         raise HTTPException(status_code=401, detail="Invalid secret key")
     token = jwt.encode({"sub": "admin", "type": "access"}, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}

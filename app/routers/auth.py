@@ -58,10 +58,13 @@ def verify_telegram(data: dict) -> tuple[bool, str]:
         data_list.append(f"{k}={v}")
     
     data_check_string = "\n".join(data_list)
+    logger.debug(f"Telegram data_check_string:\n{data_check_string}")
+    
     secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode()).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(expected_hash, check_hash):
+        logger.error(f"Hash mismatch! Expected: {expected_hash}, Received: {check_hash}")
         return False, "Telegram signature mismatch"
     return True, ""
 
