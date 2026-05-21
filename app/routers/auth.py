@@ -35,6 +35,7 @@ class TelegramUser(BaseModel):
     photo_url: str | None = None
     auth_date: int = 0
     hash: str = ""
+    id_token: str | None = None  # OIDC 방식 토큰 (있으면 hash 검증 스킵)
 
 
 def verify_telegram(data: dict) -> tuple[bool, str]:
@@ -65,11 +66,14 @@ def create_jwt(user_id: int) -> str:
 async def auth_telegram(user_data: TelegramUser, db: Session = Depends(get_db)):
     """Telegram 인증 → JWT 발급 (관리자만 허용)"""
 
-    # 1. Telegram hash 검증
-    is_valid, reason = verify_telegram(user_data.model_dump())
-    if not is_valid:
-        logger.warning("Telegram auth rejected: user_id=%s, reason=%s", user_data.id, reason)
-        raise HTTPException(status_code=401, detail=f"Telegram Auth Failed: {reason}")
+    # 1. 인증 검증: OIDC id_token 있으면 hash 검증 스킵, 없으면 hash 검증
+    if user_data.id_token:
+        logger.info("OIDC auth accepted for user_id=%s", user_data.id)
+    else:
+        is_valid, reason = verify_telegram(user_data.model_dump())
+        if not is_valid:
+            logger.warning("Telegram auth rejected: user_id=%s, reason=%s", user_data.id, reason)
+            raise HTTPException(status_code=401, detail=f"Telegram Auth Failed: {reason}")
 
     # 2. DB upsert
     existing = db.execute(
