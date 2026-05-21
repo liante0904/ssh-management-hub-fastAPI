@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt
 from pydantic import BaseModel
 
-from .routers import admin_router, firms_router, reports_router, users_router
+from .routers import admin_router, auth_router, firms_router, reports_router, users_router
 
 logger = logging.getLogger("management-hub")
 
@@ -52,6 +52,7 @@ app.add_middleware(
 )
 
 # 라우터 등록
+app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(users_router)
 app.include_router(reports_router)
