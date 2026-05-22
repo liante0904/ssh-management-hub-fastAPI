@@ -211,29 +211,63 @@ async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
 
 
 def get_oci2_metrics():
-    """oci2 서버의 메트릭을 SSH(config 기반)로 수집"""
+    """oci2 서버의 메트릭을 SSH로 수집 (환경변수로 설정)"""
+    # 환경변수에서 SSH 접속 정보 가져오기
+    oci2_host = os.getenv("OCI2_SSH_HOST", "oci2")
+    oci2_user = os.getenv("OCI2_SSH_USER", "")  # 빈 값이면 ~/.ssh/config 사용
+    oci2_key  = os.getenv("OCI2_SSH_KEY", "")   # 빈 값이면 기본 키 사용
+    oci2_port = os.getenv("OCI2_SSH_PORT", "22")
+    oci2_timeout = int(os.getenv("OCI2_SSH_TIMEOUT", "5"))
+
+    # SSH 옵션 구성
+    ssh_opts = "-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes"
+    if oci2_key:
+        ssh_opts += f" -i {oci2_key}"
+    if oci2_port != "22":
+        ssh_opts += f" -p {oci2_port}"
+
+    # SSH 대상: user@host 또는 host만 (config 사용 시)
+    if oci2_user:
+        ssh_target = f"{oci2_user}@{oci2_host}"
+    else:
+        ssh_target = oci2_host
+
+    # 원격 명령어
+    remote_cmd = "top -bn1 | head -n 5; free -b; df -b / | tail -1"
+
     try:
-        # top: head 5, free: bytes, df: bytes
-        cmd = "ssh oci2 'top -bn1 | head -n 5; free -b; df -b / | tail -1' 2>/dev/null"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3)
+        cmd = f"ssh {ssh_opts} {ssh_target} '{remote_cmd}'"
+        logger.info("OCI2 SSH command: %s", cmd)
+
+        res = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=oci2_timeout
+        )
+
         if res.returncode != 0:
+            stderr = res.stderr.strip() if res.stderr else "(no stderr)"
+            logger.warning("OCI2 SSH failed (exit=%d): %s", res.returncode, stderr[:300])
             return None
 
         output = res.stdout
+        if not output.strip():
+            logger.warning("OCI2 SSH returned empty output")
+            return None
+
         metrics = {}
 
         # CPU
         cpu_match = re.search(r"%Cpu\(s\):\s+([\d.]+)\s+us", output)
         metrics["cpu_percent"] = float(cpu_match.group(1)) if cpu_match else 0.0
 
-        # Memory
-        mem_match = re.search(r"Mem:\s+(\d+)\s+\d+\s+(\d+)", output)
+        # Memory (free -b 출력에서 Mem: 라인 파싱)
+        mem_match = re.search(r"Mem:\s+(\d+)\s+(\d+)\s+(\d+)", output)
         if mem_match:
             total = int(mem_match.group(1))
-            used = total - int(mem_match.group(2))  # free -b gives 'available' in some versions, but here simplified
+            used  = int(mem_match.group(2))
             metrics["total_gb"] = round(total / (1024**3), 2)
             metrics["used_gb"] = round(used / (1024**3), 2)
-            metrics["percent"] = round((used / total) * 100, 1)
+            metrics["percent"] = round((used / total) * 100, 1) if total > 0 else 0.0
 
         # Disk
         disk_line = output.strip().split("\n")[-1]
@@ -249,7 +283,12 @@ def get_oci2_metrics():
                 pass
 
         return metrics if metrics else None
-    except Exception:
+
+    except subprocess.TimeoutExpired:
+        logger.warning("OCI2 SSH timed out after %ds", oci2_timeout)
+        return None
+    except Exception as e:
+        logger.warning("OCI2 SSH unexpected error: %s", e)
         return None
 
 
