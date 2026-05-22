@@ -83,7 +83,7 @@ jobs:
       - uses: appleboy/ssh-action@v1.0.3
         env:
           EXPECTED_SHA: ${{ github.sha }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_NAME: ssh-management-hub-fastAPI
           REPO_OWNER: ${{ github.repository_owner }}
           GITHUB_ACTOR: ${{ github.actor }}
           APP_DIR: /home/ubuntu/workspace/ssh-management-hub-fastAPI
