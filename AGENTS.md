@@ -71,6 +71,22 @@ internal.management-hub/
 4. `deploy_prepare.py`로 git sync + `.env` 생성 포함
 5. Netlify는 프론트엔드 레포 main 푸시 시 자동 배포
 
+> ### ⚠️ CI/CD `deploy.yml` 복사 시 필수 수정사항
+>
+> `deploy.yml`을 새 프로젝트에 복사해서 쓸 때 **아래 5개 값을 반드시 수정**해야 한다.
+> 안 바꾸면 OCI git clone 실패, GHCR 이미지 충돌, 컨테이너 이름 꼬임 등이 발생한다.
+>
+> | # | 변수 위치 | 설명 | 현재 값 | 비고 |
+> |---|----------|------|---------|------|
+> | 1 | `env.IMAGE_NAME` (L11) | GHCR 이미지명 | `${{ github.repository_owner }}/ssh-management-hub-fastapi` | 새 레포명으로 변경 |
+> | 2 | `env.REPO_NAME` (L86) | OCI에서 clone할 레포명 | `ssh-management-hub-fastAPI` | **반드시 public repo**여야 함. `github.event.repository.name` 쓰면 private repo로 잘못 연결됨 |
+> | 3 | `env.APP_DIR` (L89) | OCI 프로젝트 경로 | `/home/ubuntu/workspace/internal.management-hub/apps/backend/ssh-management-hub-fastAPI` | oci2와 동일한 모노레포 풀경로 |
+> | 4 | `env.CONTAINER_NAME` (L109) | 배포 확인용 컨테이너명 | `ssh-management-hub-fastapi-prod` | docker-compose.yml의 container_name과 일치 |
+> | 5 | `jobs.deploy.steps.script` 내 `docker exec` 대상 (L114-115) | nginx 컨테이너명 | `internal-nginx`, `main-nginx` | 필요 없으면 제거 |
+>
+> **OCI SSH 키는 `ssh-management-hub-fastAPI` public repo에만 접근 가능**하다.
+> private repo (`internal.management-hub`)는 clone 불가 → `REPO_NAME` 절대 `github.event.repository.name` 쓰지 말 것.
+
 ## Project Structure
 
 ```
