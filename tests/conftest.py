@@ -153,7 +153,40 @@ class MockDBSession:
                 ])
 
         if "tbl_sec_reports_pdf_archive" in stmt_lower:
-            return MockResult([MockRow(100, "/path/to/pdf", 1024000, 10, "archived", "onedrive", True, False, "2025-01-01 12:00:00")])
+            if " update " in _w:
+                self._committed = True
+                return MockResult([MockRow(1)])
+            elif "count(*) filter" in stmt_lower and "group by" in stmt_lower:
+                if "firm_nm" in stmt_lower:
+                    return MockResult([
+                        MockRow("하나증권", 100, 90, 10),
+                        MockRow("KB증권", 50, 45, 5),
+                    ])
+                elif "created_at" in stmt_lower:
+                    return MockResult([
+                        MockRow("2025-01-01", 50, 45, 5),
+                        MockRow("2025-01-02", 30, 28, 2),
+                    ])
+                else:
+                    return MockResult([MockRow(100)])
+            elif "count(*)" in stmt_lower:
+                return MockResult([MockRow(100)])
+            elif "select report_id, firm_nm, title" in stmt_lower:
+                # list_pdf_archive — 17개 컬럼
+                return MockResult([
+                    MockRow(100, "하나증권", "Title", "20250101", "Author", "file.pdf", 1024000, 10,
+                            "ARCHIVED", "onedrive", "Y", 2, 2, 0, True, False,
+                            "2025-01-01 12:00:00", "2025-01-01 12:00:00"),
+                    MockRow(101, "KB증권", "Title2", "20250102", "Author2", "file2.pdf", 2048000, 20,
+                            "INIT", "onedrive", "N", 0, 0, 3, False, True,
+                            "2025-01-02 12:00:00", "2025-01-02 12:00:00"),
+                ])
+            elif "in (select report_id" in stmt_lower.replace(" ", ""):
+                self._committed = True
+                return MockResult([MockRow(10)])
+            else:
+                # /{report_id}/pdf 상세 조회
+                return MockResult([MockRow(100, "/path/to/pdf", 1024000, 10, "archived", "onedrive", True, False, "2025-01-01 12:00:00")])
 
         if "tbl_fnguide_report_summaries" in stmt_lower:
             if "count(*)" in stmt_lower:

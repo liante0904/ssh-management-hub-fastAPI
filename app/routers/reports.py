@@ -112,6 +112,70 @@ class SendHistoryOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Schemas — PDF Archive List / Stats / Reprocess
+# ---------------------------------------------------------------------------
+
+class PdfArchiveItemOut(BaseModel):
+    """PDF 아카이브 목록 아이템"""
+    report_id: int
+    firm_nm: Optional[str] = None
+    title: Optional[str] = None
+    reg_dt: Optional[str] = None
+    author: Optional[str] = None
+    file_name: Optional[str] = None
+    file_size: Optional[int] = None
+    page_count: Optional[int] = None
+    archive_status: Optional[str] = None
+    storage_backend: Optional[str] = None
+    download_status_yn: Optional[str] = None
+    sync_status: Optional[int] = 0
+    pdf_sync_status: Optional[int] = 0
+    retry_count: Optional[int] = 0
+    has_text: Optional[bool] = None
+    is_encrypted: Optional[bool] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class PdfArchiveListOut(BaseModel):
+    items: list[PdfArchiveItemOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class DailyPdfStats(BaseModel):
+    date: str
+    total: int
+    archived: int
+    failed: int
+
+
+class FirmPdfStats(BaseModel):
+    firm_nm: str
+    total: int
+    archived: int
+    failed: int
+
+
+class ReprocessRequest(BaseModel):
+    """PDF 재처리 요청 — 필터 조건에 맞는 건들의 sync_status를 0으로 초기화"""
+    archive_status: Optional[str] = Field(None, description="필터: archive_status (예: 'INIT')")
+    firm_nm: Optional[str] = Field(None, description="필터: 증권사명")
+    reg_dt: Optional[str] = Field(None, description="필터: 등록일자 (YYYYMMDD)")
+    sync_status: Optional[int] = Field(None, description="필터: sync_status (예: 9=실패)")
+    pdf_sync_status: Optional[int] = Field(None, description="필터: pdf_sync_status")
+    report_ids: Optional[list[int]] = Field(None, description="특정 report_id 목록 (최대 500개)")
+    limit: int = Field(100, ge=100, le=500, description="재처리 최대 건수")
+
+
+class ReprocessResponse(BaseModel):
+    matched: int
+    updated: int
+    message: str
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -262,6 +326,203 @@ async def list_send_history(
     ).fetchall()
 
     return [SendHistoryOut(id=r[0], report_id=r[1], user_id=r[2], keyword=r[3], sent_at=r[4]) for r in rows]
+
+
+# ── PDF Archive 관리 (必 /{report_id} 보다 앞에 위치) ────────────────────────
+
+@router.get("/pdf-archive", response_model=PdfArchiveListOut)
+async def list_pdf_archive(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    firm_nm: Optional[str] = Query(None, description="증권사명"),
+    archive_status: Optional[str] = Query(None, description="ARCHIVED / INIT"),
+    reg_dt: Optional[str] = Query(None, description="등록일자 YYYYMMDD"),
+    sync_status: Optional[int] = Query(None, description="0=대기, 2=완료, 9=실패"),
+    pdf_sync_status: Optional[int] = Query(None),
+    download_status_yn: Optional[str] = Query(None, description="Y/N"),
+    search: Optional[str] = Query(None, description="제목 검색"),
+    sort: Optional[str] = Query("report_id DESC"),
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """PDF 아카이브 목록 조회 (필터 + 페이지네이션)"""
+    where = []
+    params: dict = {}
+
+    if firm_nm:
+        where.append("firm_nm ILIKE :firm_nm")
+        params["firm_nm"] = f"%{firm_nm}%"
+    if archive_status:
+        where.append("archive_status = :archive_status")
+        params["archive_status"] = archive_status
+    if reg_dt:
+        where.append("reg_dt = :reg_dt")
+        params["reg_dt"] = reg_dt
+    if sync_status is not None:
+        where.append("sync_status = :sync_status")
+        params["sync_status"] = sync_status
+    if pdf_sync_status is not None:
+        where.append("pdf_sync_status = :pdf_sync_status")
+        params["pdf_sync_status"] = pdf_sync_status
+    if download_status_yn:
+        where.append("download_status_yn = :download_status_yn")
+        params["download_status_yn"] = download_status_yn
+    if search:
+        where.append("title ILIKE :search")
+        params["search"] = f"%{search}%"
+
+    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    allowed_sorts = {"report_id DESC", "report_id ASC", "created_at DESC", "created_at ASC", "reg_dt DESC", "reg_dt ASC"}
+    sort_col = sort if sort in allowed_sorts else "report_id DESC"
+
+    total = db.execute(text(f"SELECT COUNT(*) FROM tbl_sec_reports_pdf_archive {where_clause}"), params).scalar() or 0
+    offset = (page - 1) * page_size
+
+    rows = db.execute(
+        text(
+            f"SELECT report_id, firm_nm, title, reg_dt, author, file_name, file_size, page_count, "
+            f"archive_status, storage_backend, download_status_yn, sync_status, pdf_sync_status, retry_count, "
+            f"has_text, is_encrypted, "
+            f"to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, "
+            f"to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at "
+            f"FROM tbl_sec_reports_pdf_archive {where_clause} "
+            f"ORDER BY {sort_col} LIMIT :limit OFFSET :offset"
+        ),
+        {**params, "limit": page_size, "offset": offset},
+    ).fetchall()
+
+    items = [
+        PdfArchiveItemOut(
+            report_id=r[0], firm_nm=r[1], title=r[2], reg_dt=r[3], author=r[4],
+            file_name=r[5], file_size=r[6], page_count=r[7], archive_status=r[8],
+            storage_backend=r[9], download_status_yn=r[10], sync_status=r[11] or 0,
+            pdf_sync_status=r[12] or 0, retry_count=r[13] or 0,
+            has_text=r[14], is_encrypted=r[15], created_at=r[16], updated_at=r[17],
+        )
+        for r in rows
+    ]
+    return PdfArchiveListOut(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/pdf-archive/stats/daily", response_model=list[DailyPdfStats])
+async def pdf_archive_stats_daily(
+    days: int = Query(30, ge=1, le=365, description="조회할 일수"),
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """일별 PDF 아카이브 통계 (생성일 기준)"""
+    rows = db.execute(
+        text(
+            "SELECT to_char(created_at::date, 'YYYY-MM-DD') as dt, "
+            "COUNT(*) as total, "
+            "COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED') as archived, "
+            "COUNT(*) FILTER (WHERE archive_status != 'ARCHIVED' OR archive_status IS NULL) as failed "
+            "FROM tbl_sec_reports_pdf_archive "
+            "WHERE created_at >= now() - (:days || ' days')::interval "
+            "GROUP BY created_at::date ORDER BY dt DESC"
+        ),
+        {"days": str(days)},
+    ).fetchall()
+    return [DailyPdfStats(date=r[0], total=r[1], archived=r[2], failed=r[3]) for r in rows]
+
+
+@router.get("/pdf-archive/stats/by-firm", response_model=list[FirmPdfStats])
+async def pdf_archive_stats_by_firm(
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """증권사별 PDF 아카이브 성공/실패 통계"""
+    rows = db.execute(
+        text(
+            "SELECT COALESCE(firm_nm, 'Unknown') as firm_nm, "
+            "COUNT(*) as total, "
+            "COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED') as archived, "
+            "COUNT(*) FILTER (WHERE archive_status != 'ARCHIVED' OR archive_status IS NULL) as failed "
+            "FROM tbl_sec_reports_pdf_archive "
+            "GROUP BY firm_nm ORDER BY total DESC"
+        ),
+    ).fetchall()
+    return [FirmPdfStats(firm_nm=r[0], total=r[1], archived=r[2], failed=r[3]) for r in rows]
+
+
+@router.post("/pdf-archive/reprocess", response_model=ReprocessResponse)
+async def reprocess_pdf_archive(
+    body: ReprocessRequest,
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """PDF 아카이브 재처리 — 필터 조건에 맞는 건들의 sync_status를 0으로 초기화 (100~500건 단위)"""
+    where = []
+    params: dict = {}
+
+    if body.report_ids:
+        if len(body.report_ids) > 500:
+            raise HTTPException(status_code=400, detail="report_ids는 최대 500개까지 가능합니다")
+        where.append("report_id = ANY(:report_ids)")
+        params["report_ids"] = body.report_ids
+    else:
+        if body.archive_status:
+            where.append("archive_status = :archive_status")
+            params["archive_status"] = body.archive_status
+        if body.firm_nm:
+            where.append("firm_nm ILIKE :firm_nm")
+            params["firm_nm"] = f"%{body.firm_nm}%"
+        if body.reg_dt:
+            where.append("reg_dt = :reg_dt")
+            params["reg_dt"] = body.reg_dt
+        if body.sync_status is not None:
+            where.append("sync_status = :sync_status")
+            params["sync_status"] = body.sync_status
+        if body.pdf_sync_status is not None:
+            where.append("pdf_sync_status = :pdf_sync_status")
+            params["pdf_sync_status"] = body.pdf_sync_status
+
+    if not where:
+        raise HTTPException(status_code=400, detail="최소 하나의 필터 조건이 필요합니다")
+
+    where_clause = "WHERE " + " AND ".join(where)
+
+    # 매칭 건수 확인
+    matched = db.execute(
+        text(f"SELECT COUNT(*) FROM tbl_sec_reports_pdf_archive {where_clause}"),
+        params,
+    ).scalar() or 0
+
+    if matched == 0:
+        return ReprocessResponse(matched=0, updated=0, message="재처리 대상이 없습니다")
+
+    # report_ids 직접 지정 시 LIMIT 없이 전체 업데이트, 그 외는 LIMIT 적용
+    if body.report_ids:
+        result = db.execute(
+            text(
+                f"UPDATE tbl_sec_reports_pdf_archive "
+                f"SET sync_status = 0, pdf_sync_status = 0, retry_count = retry_count + 1, updated_at = now() "
+                f"{where_clause}"
+            ),
+            params,
+        )
+    else:
+        result = db.execute(
+            text(
+                f"UPDATE tbl_sec_reports_pdf_archive "
+                f"SET sync_status = 0, pdf_sync_status = 0, retry_count = retry_count + 1, updated_at = now() "
+                f"WHERE report_id IN ("
+                f"  SELECT report_id FROM tbl_sec_reports_pdf_archive {where_clause} "
+                f"  ORDER BY report_id LIMIT :limit"
+                f")"
+            ),
+            {**params, "limit": body.limit},
+        )
+
+    db.commit()
+    updated = result.rowcount
+
+    return ReprocessResponse(
+        matched=matched,
+        updated=updated,
+        message=f"{updated}건 재처리 요청 완료 (전체 대상: {matched}건)",
+    )
 
 
 # ── /{report_id} 이하 (파라미터 라우트 — 정적 경로 뒤에 위치) ──────────────

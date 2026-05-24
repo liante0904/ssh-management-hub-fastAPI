@@ -142,3 +142,133 @@ class TestSendHistory:
     def test_send_history_filter_by_user(self, client: TestClient):
         res = client.get("/api/reports/send-history?user_id=1")
         assert res.status_code == 200
+
+
+class TestListPdfArchive:
+    """PDF 아카이브 목록 조회 테스트"""
+
+    def test_list_pdf_archive(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive")
+        assert res.status_code == 200
+        data = res.json()
+        assert "items" in data
+        assert "total" in data
+        assert data["total"] == 100
+        assert len(data["items"]) == 2
+
+    def test_list_pdf_archive_pagination(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?page=1&page_size=10")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["page"] == 1
+        assert data["page_size"] == 10
+
+    def test_list_pdf_archive_filter_by_firm(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?firm_nm=하나")
+        assert res.status_code == 200
+
+    def test_list_pdf_archive_filter_by_status(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?archive_status=INIT")
+        assert res.status_code == 200
+
+    def test_list_pdf_archive_filter_by_sync_status(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?sync_status=9")
+        assert res.status_code == 200
+
+    def test_list_pdf_archive_filter_by_reg_dt(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?reg_dt=20250101")
+        assert res.status_code == 200
+
+    def test_list_pdf_archive_search(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive?search=Title")
+        assert res.status_code == 200
+
+    def test_pdf_archive_item_fields(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive")
+        item = res.json()["items"][0]
+        for field in ("report_id", "firm_nm", "title", "archive_status", "sync_status", "pdf_sync_status", "retry_count"):
+            assert field in item
+
+
+class TestPdfArchiveStatsDaily:
+    """일별 PDF 통계 테스트"""
+
+    def test_stats_daily(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive/stats/daily")
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+
+    def test_stats_daily_fields(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive/stats/daily")
+        item = res.json()[0]
+        for field in ("date", "total", "archived", "failed"):
+            assert field in item
+
+    def test_stats_daily_custom_days(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive/stats/daily?days=7")
+        assert res.status_code == 200
+
+
+class TestPdfArchiveStatsByFirm:
+    """증권사별 PDF 통계 테스트"""
+
+    def test_stats_by_firm(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive/stats/by-firm")
+        assert res.status_code == 200
+        data = res.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+
+    def test_stats_by_firm_fields(self, client: TestClient):
+        res = client.get("/api/reports/pdf-archive/stats/by-firm")
+        item = res.json()[0]
+        for field in ("firm_nm", "total", "archived", "failed"):
+            assert field in item
+
+
+class TestReprocessPdfArchive:
+    """PDF 재처리 테스트"""
+
+    def test_reprocess_with_filters(self, client: TestClient):
+        res = client.post(
+            "/api/reports/pdf-archive/reprocess",
+            json={"archive_status": "INIT", "limit": 100},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["matched"] == 100
+        assert data["updated"] > 0
+        assert "건 재처리" in data["message"]
+
+    def test_reprocess_with_report_ids(self, client: TestClient):
+        res = client.post(
+            "/api/reports/pdf-archive/reprocess",
+            json={"report_ids": [100, 101, 102], "limit": 500},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["updated"] > 0
+
+    def test_reprocess_no_filter_fails(self, client: TestClient):
+        res = client.post(
+            "/api/reports/pdf-archive/reprocess",
+            json={"limit": 100},
+        )
+        assert res.status_code == 400
+        assert "필터" in res.json()["detail"]
+
+    def test_reprocess_limit_too_small(self, client: TestClient):
+        res = client.post(
+            "/api/reports/pdf-archive/reprocess",
+            json={"archive_status": "INIT", "limit": 50},
+        )
+        assert res.status_code == 422  # validation error
+
+    def test_reprocess_limit_too_large(self, client: TestClient):
+        res = client.post(
+            "/api/reports/pdf-archive/reprocess",
+            json={"archive_status": "INIT", "limit": 600},
+        )
+        assert res.status_code == 422
