@@ -60,6 +60,45 @@ class TestAdminMetrics:
                 assert "cpu_percent" in data["oci2"]
                 assert "total_gb" in data["oci2"]
 
+    def test_metrics_contains_oci(self, client: TestClient):
+        """OCI (배포서버) 메트릭 필드 포함 여부 확인 (mocking subprocess)"""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="%Cpu(s): 5.0 us\nMem: 4000000000 1500000000 2500000000\n/dev/sda1 30000000000 8000000000 22000000000 25% /"
+            )
+            res = client.get("/admin/metrics")
+            assert res.status_code == 200
+            data = res.json()
+            assert "oci" in data
+            if data["oci"]:
+                assert "cpu_percent" in data["oci"]
+                assert "total_gb" in data["oci"]
+                assert "disk_percent" in data["oci"]
+
+    def test_metrics_oci_offline_when_ssh_fails(self, client: TestClient):
+        """OCI SSH 연결 실패 시 None 반환"""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="Connection refused")
+            res = client.get("/admin/metrics")
+            assert res.status_code == 200
+            data = res.json()
+            assert "oci" in data
+            assert data["oci"] is None
+
+    def test_metrics_oci2_offline_when_ssh_fails(self, client: TestClient):
+        """OCI2 SSH 연결 실패 시 None 반환"""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="Connection refused")
+            res = client.get("/admin/metrics")
+            assert res.status_code == 200
+            data = res.json()
+            assert "oci2" in data
+            assert data["oci2"] is None
+
     def test_list_db_tables(self, client: TestClient):
         """DB 테이블 목록 조회"""
         res = client.get("/admin/db/tables")

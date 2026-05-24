@@ -193,6 +193,7 @@ async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
             "used_gb": disk_used_gb,
             "percent": disk_percent,
         },
+        "oci": get_oci_metrics(),
         "oci2": get_oci2_metrics(),
         "database": {
             "status": "online" if db_ok else "offline",
@@ -289,6 +290,84 @@ def get_oci2_metrics():
         return None
     except Exception as e:
         logger.warning("OCI2 SSH unexpected error: %s", e)
+        return None
+
+
+def get_oci_metrics():
+    """OCI (배포서버) 서버의 메트릭을 SSH로 수집 (환경변수로 설정)"""
+    oci_host = os.getenv("OCI_SSH_HOST", "oci")
+    oci_user = os.getenv("OCI_SSH_USER", "")
+    oci_key  = os.getenv("OCI_SSH_KEY", "")
+    oci_port = os.getenv("OCI_SSH_PORT", "22")
+    oci_timeout = int(os.getenv("OCI_SSH_TIMEOUT", "5"))
+
+    ssh_opts = "-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes"
+    if oci_key:
+        ssh_opts += f" -i {oci_key}"
+    if oci_port != "22":
+        ssh_opts += f" -p {oci_port}"
+
+    if oci_user:
+        ssh_target = f"{oci_user}@{oci_host}"
+    else:
+        ssh_target = oci_host
+
+    remote_cmd = "LC_ALL=C top -bn1 | head -n 5; LC_ALL=C free -b; LC_ALL=C df -B1 / | tail -1"
+
+    try:
+        cmd = f"ssh {ssh_opts} {ssh_target} '{remote_cmd}'"
+        logger.info("OCI SSH command: %s", cmd)
+
+        res = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            timeout=oci_timeout
+        )
+
+        if res.returncode != 0:
+            stderr = res.stderr.strip() if res.stderr else "(no stderr)"
+            logger.warning("OCI SSH failed (exit=%d): %s", res.returncode, stderr[:300])
+            return None
+
+        output = res.stdout
+        if not output.strip():
+            logger.warning("OCI SSH returned empty output")
+            return None
+
+        metrics = {}
+
+        # CPU
+        cpu_match = re.search(r"%Cpu\(s\):\s+([\d.]+)\s+us", output)
+        metrics["cpu_percent"] = float(cpu_match.group(1)) if cpu_match else 0.0
+
+        # Memory
+        mem_match = re.search(r"(?:Mem|메모리):\s+(\d+)\s+(\d+)\s+(\d+)", output)
+        if mem_match:
+            total = int(mem_match.group(1))
+            used  = int(mem_match.group(2))
+            metrics["total_gb"] = round(total / (1024**3), 2)
+            metrics["used_gb"] = round(used / (1024**3), 2)
+            metrics["percent"] = round((used / total) * 100, 1) if total > 0 else 0.0
+
+        # Disk
+        disk_line = output.strip().split("\n")[-1]
+        disk_parts = disk_line.split()
+        if len(disk_parts) >= 5:
+            try:
+                total = int(disk_parts[1])
+                used = int(disk_parts[2])
+                metrics["disk_total_gb"] = round(total / (1024**3), 1)
+                metrics["disk_used_gb"] = round(used / (1024**3), 1)
+                metrics["disk_percent"] = int(disk_parts[4].replace("%", ""))
+            except (ValueError, IndexError):
+                pass
+
+        return metrics if metrics else None
+
+    except subprocess.TimeoutExpired:
+        logger.warning("OCI SSH timed out after %ds", oci_timeout)
+        return None
+    except Exception as e:
+        logger.warning("OCI SSH unexpected error: %s", e)
         return None
 
 
