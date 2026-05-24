@@ -15,6 +15,7 @@ from typing import Optional
 import psutil
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import text
@@ -354,34 +355,80 @@ async def query_db_table(
     if table not in allowed_tables:
         raise HTTPException(status_code=400, detail="Invalid table name")
 
-    res = db.execute(text(f"SELECT * FROM {table} LIMIT :limit"), {"limit": limit})
-    columns = list(res.keys())
-    data = [_serialize_row(columns, row) for row in res.fetchall()]
-    return {"table": table, "columns": columns, "data": data}
+    try:
+        res = db.execute(text(f"SELECT * FROM {table} LIMIT :limit"), {"limit": limit})
+        columns = list(res.keys())
+        data = [_serialize_row(columns, row) for row in res.fetchall()]
+        return {"table": table, "columns": columns, "data": data}
+    except Exception as e:
+        logger.warning("DB query failed for table=%s: %s", table, e)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)[:200]}")
 
 
 def _serialize_row(columns, row):
-    """JSON 직렬화 가능한 타입으로 변환 (datetime, Decimal, bytes, UUID 등)"""
+    """JSON 직렬화 가능한 타입으로 변환 (datetime, Decimal, bytes, UUID, PG array 등)"""
     from datetime import date as _date, datetime as _dt, time as _time
     from decimal import Decimal as _Decimal
     result = {}
     for col, val in zip(columns, row):
-        if val is None:
-            result[col] = None
-        elif isinstance(val, (_dt, _date, _time)):
-            result[col] = val.isoformat()
-        elif isinstance(val, _Decimal):
-            result[col] = float(val)
-        elif isinstance(val, (bytes, bytearray, memoryview)):
-            result[col] = f"<binary:{len(val)} bytes>"
-        elif hasattr(val, "isoformat"):
-            result[col] = val.isoformat()
-        else:
-            try:
-                result[col] = str(val) if not isinstance(val, (int, float, bool, str)) else val
-            except Exception:
-                result[col] = repr(val)
+        try:
+            if val is None:
+                result[col] = None
+            elif isinstance(val, (_dt, _date, _time)):
+                result[col] = val.isoformat()
+            elif isinstance(val, _Decimal):
+                result[col] = float(val)
+            elif isinstance(val, (bytes, bytearray, memoryview)):
+                result[col] = f"<binary:{len(val)} bytes>"
+            elif hasattr(val, "isoformat"):
+                result[col] = val.isoformat()
+            elif isinstance(val, (int, float, bool, str)):
+                result[col] = val
+            else:
+                try:
+                    result[col] = str(val)
+                except Exception:
+                    result[col] = repr(val)
+        except Exception as exc:
+            logger.warning("Serialize failed for column=%s type=%s: %s", col, type(val).__name__, exc)
+            result[col] = f"<serialize_error: {type(val).__name__}>"
     return result
+
+
+class SqlQueryRequest(BaseModel):
+    query: str = Field(..., description="SELECT 쿼리 (읽기 전용)")
+    limit: int = Field(50, ge=1, le=200)
+
+
+@router.post("/db/query")
+async def run_sql_query(
+    body: SqlQueryRequest,
+    current_user: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """커스텀 SQL 쿼리 실행 (SELECT only, 읽기 전용)"""
+    sql = body.query.strip()
+    if not sql.upper().startswith("SELECT"):
+        raise HTTPException(status_code=400, detail="SELECT 쿼리만 허용됩니다")
+
+    dangerous = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE", "GRANT", "REVOKE"]
+    for kw in dangerous:
+        if kw in sql.upper():
+            raise HTTPException(status_code=400, detail=f"허용되지 않는 키워드: {kw}")
+
+    if "LIMIT" not in sql.upper():
+        sql = f"{sql.rstrip(';').strip()} LIMIT {body.limit}"
+
+    try:
+        res = db.execute(text(sql), {"limit": body.limit})
+        columns = list(res.keys()) if res.returns_rows else []
+        if not columns:
+            return {"columns": [], "data": [], "message": "Query executed (no rows)"}
+        data = [_serialize_row(columns, row) for row in res.fetchall()]
+        return {"columns": columns, "data": data}
+    except Exception as e:
+        logger.warning("Custom SQL query failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e)[:300])
 
 
 # ---------------------------------------------------------------------------
