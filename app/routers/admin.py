@@ -333,7 +333,21 @@ async def list_db_tables(
             "ORDER BY table_name"
         )
     ).fetchall()
-    return {"tables": [r[0] for r in rows]}
+    table_names = [r[0] for r in rows]
+
+    # Fetch table comments
+    result = []
+    for name in table_names:
+        try:
+            comment = db.execute(
+                text("SELECT obj_description(:tbl::regclass, 'pg_class')"),
+                {"tbl": name},
+            ).scalar()
+        except Exception:
+            comment = None
+        result.append({"name": name, "comment": comment})
+
+    return {"tables": result}
 
 
 @router.get("/db/query/{table}")
@@ -378,7 +392,31 @@ async def query_db_table(
         res = db.execute(text(query), {"limit": limit, "offset": offset})
         columns = list(res.keys())
         data = [_serialize_row(columns, row) for row in res.fetchall()]
-        return {"table": table, "columns": columns, "data": data}
+
+        # Fetch column comments
+        col_comments = {}
+        try:
+            comment_rows = db.execute(
+                text(
+                    "SELECT column_name, pg_catalog.col_description(:tbl::regclass, ordinal_position::int) AS comment "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :tbl_name "
+                    "ORDER BY ordinal_position"
+                ),
+                {"tbl": table, "tbl_name": table},
+            ).fetchall()
+            for cr in comment_rows:
+                if cr[1]:
+                    col_comments[cr[0]] = cr[1]
+        except Exception:
+            pass
+
+        return {
+            "table": table,
+            "columns": columns,
+            "column_comments": col_comments,
+            "data": data,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -399,6 +437,60 @@ async def query_db_table(
             status_code=500,
             detail=f"쿼리 실패 ({table}): {err_msg[:200]}",
         )
+
+
+class CommentRequest(BaseModel):
+    table_name: str = Field(..., description="테이블명")
+    comment: str = Field("", description="코멘트 (빈 문자열이면 삭제)")
+    column_name: Optional[str] = Field(None, description="컬럼명 (지정 시 컬럼 코멘트)")
+
+
+@router.put("/db/comment")
+async def update_db_comment(
+    body: CommentRequest,
+    current_user: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """테이블/컬럼 코멘트 수정 (관리자용)"""
+    # Validate table exists
+    allowed = [
+        r[0]
+        for r in db.execute(
+            text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        ).fetchall()
+    ]
+    if body.table_name not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid table name")
+
+    try:
+        if body.column_name:
+            # Validate column exists
+            cols = [
+                r[0]
+                for r in db.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = :tbl"
+                    ),
+                    {"tbl": body.table_name},
+                ).fetchall()
+            ]
+            if body.column_name not in cols:
+                raise HTTPException(status_code=400, detail=f"Invalid column: {body.column_name}")
+
+            sql = f"COMMENT ON COLUMN {body.table_name}.{body.column_name} IS :comment"
+        else:
+            sql = f"COMMENT ON TABLE {body.table_name} IS :comment"
+
+        comment_val = body.comment if body.comment else None
+        db.execute(text(sql), {"comment": comment_val})
+        db.commit()
+        return {"ok": True, "message": "코멘트가 업데이트되었습니다."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Comment update failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"코멘트 수정 실패: {str(e)[:200]}")
 
 
 def _serialize_row(columns, row):
