@@ -420,8 +420,12 @@ async def query_db_table(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         err_msg = str(e)
-        logger.warning("DB query failed for table=%s: %s", table, err_msg)
+        logger.error(
+            "DB query failed for table=%s limit=%s offset=%s order_by=%s: %s\nTRACEBACK:\n%s",
+            table, limit, offset, order_by, err_msg, traceback.format_exc(),
+        )
 
         if "permission denied" in err_msg.lower():
             raise HTTPException(
@@ -432,6 +436,11 @@ async def query_db_table(
             raise HTTPException(
                 status_code=404,
                 detail=f"테이블이 존재하지 않습니다: {table}",
+            )
+        if "can't adapt type" in err_msg.lower() or "cannot adapt" in err_msg.lower():
+            raise HTTPException(
+                status_code=500,
+                detail=f"지원되지 않는 데이터 타입이 있습니다 ({table}). 관리자에게 문의하세요.",
             )
         raise HTTPException(
             status_code=500,
@@ -493,38 +502,95 @@ async def update_db_comment(
         raise HTTPException(status_code=500, detail=f"코멘트 수정 실패: {str(e)[:200]}")
 
 
-def _serialize_row(columns, row):
-    """JSON 직렬화 가능한 타입으로 변환 (datetime, Decimal, bytes, UUID, PG array 등)"""
+# 직렬화 최대 재귀 깊이 (중첩된 jsonb/array 방어)
+_MAX_SERIALIZE_DEPTH = 10
+
+
+def _serialize_value(val, _depth=0):
+    """단일 값을 JSON 직렬화 가능한 타입으로 재귀 변환"""
     import math
-    from datetime import date as _date, datetime as _dt, time as _time
+    import uuid as _uuid
+    from datetime import date as _date, datetime as _dt, time as _time, timedelta as _td
     from decimal import Decimal as _Decimal
+
+    if val is None:
+        return None
+
+    # ── 스칼라 기본형 (가장 흔한 케이스를 먼저) ──
+    if isinstance(val, (bool, int, str)):
+        return val
+
+    # ── float: NaN/Inf 처리 ──
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return None  # JSON 표준에 맞게 null로 변환
+        return val
+
+    # ── 날짜/시간 ──
+    if isinstance(val, (_dt, _date, _time)):
+        return val.isoformat()
+
+    # ── timedelta (PostgreSQL INTERVAL) ──
+    if isinstance(val, _td):
+        return str(val)
+
+    # ── Decimal → float (NaN/Inf 처리 포함) ──
+    if isinstance(val, _Decimal):
+        if val.is_nan() or val.is_infinite():
+            return None
+        return float(val)
+
+    # ── UUID ──
+    if isinstance(val, _uuid.UUID):
+        return str(val)
+
+    # ── bytes / binary ──
+    if isinstance(val, (bytes, bytearray, memoryview)):
+        return f"<binary:{len(val)} bytes>"
+
+    # ── 재귀 깊이 초과 방어 ──
+    if _depth >= _MAX_SERIALIZE_DEPTH:
+        try:
+            return str(val)
+        except Exception:
+            return f"<max_depth:{type(val).__name__}>"
+
+    # ── PostgreSQL array → Python list (재귀 변환) ──
+    if isinstance(val, list):
+        return [_serialize_value(item, _depth + 1) for item in val]
+
+    # ── PostgreSQL JSONB / composite type → dict ──
+    if isinstance(val, dict):
+        return {str(k): _serialize_value(v, _depth + 1) for k, v in val.items()}
+
+    # ── tuple 등 기타 시퀀스 → list로 변환 ──
+    if isinstance(val, tuple):
+        return [_serialize_value(item, _depth + 1) for item in val]
+
+    # ── set / frozenset → list ──
+    if isinstance(val, (set, frozenset)):
+        return [_serialize_value(item, _depth + 1) for item in sorted(val, key=str)]
+
+    # ── isoformat이 있는 기타 타입 (예: pendulum, arrow 등) ──
+    if hasattr(val, "isoformat"):
+        try:
+            return val.isoformat()
+        except Exception:
+            pass
+
+    # ── 최종 fallback: str() ──
+    try:
+        return str(val)
+    except Exception:
+        return f"<unserializable: {type(val).__name__}>"
+
+
+def _serialize_row(columns, row):
+    """JSON 직렬화 가능한 타입으로 변환 (datetime, Decimal, bytes, UUID, PG array, JSONB 등)"""
     result = {}
     for col, val in zip(columns, row):
         try:
-            if val is None:
-                result[col] = None
-            elif isinstance(val, (_dt, _date, _time)):
-                result[col] = val.isoformat()
-            elif isinstance(val, _Decimal):
-                result[col] = float(val)
-            elif isinstance(val, (bytes, bytearray, memoryview)):
-                result[col] = f"<binary:{len(val)} bytes>"
-            elif hasattr(val, "isoformat"):
-                result[col] = val.isoformat()
-            elif isinstance(val, float):
-                if math.isnan(val):
-                    result[col] = None  # NaN → null
-                elif math.isinf(val):
-                    result[col] = None  # Infinity → null
-                else:
-                    result[col] = val
-            elif isinstance(val, (int, bool, str)):
-                result[col] = val
-            else:
-                try:
-                    result[col] = str(val)
-                except Exception:
-                    result[col] = repr(val)
+            result[col] = _serialize_value(val)
         except Exception as exc:
             logger.warning("Serialize failed for column=%s type=%s: %s", col, type(val).__name__, exc)
             result[col] = f"<serialize_error: {type(val).__name__}>"
