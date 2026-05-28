@@ -352,47 +352,58 @@ async def list_pdf_archive(
     current_admin: dict = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """PDF 아카이브 목록 조회 (필터 + 페이지네이션)"""
+    """PDF 아카이브 목록 조회 — tbl_sec_reports r LEFT JOIN archive a"""
     where = []
     params: dict = {}
 
     if firm_nm:
-        where.append("firm_nm ILIKE :firm_nm")
+        where.append("r.firm_nm ILIKE :firm_nm")
         params["firm_nm"] = f"%{firm_nm}%"
     if archive_status:
-        where.append("archive_status = :archive_status")
+        where.append("a.archive_status = :archive_status")
         params["archive_status"] = archive_status
     if reg_dt:
-        where.append("reg_dt = :reg_dt")
+        where.append("r.reg_dt = :reg_dt")
         params["reg_dt"] = reg_dt
     if sync_status is not None:
-        where.append("sync_status = :sync_status")
+        where.append("a.sync_status = :sync_status")
         params["sync_status"] = sync_status
     if pdf_sync_status is not None:
-        where.append("pdf_sync_status = :pdf_sync_status")
+        where.append("a.pdf_sync_status = :pdf_sync_status")
         params["pdf_sync_status"] = pdf_sync_status
     if download_status_yn:
-        where.append("download_status_yn = :download_status_yn")
+        where.append("a.download_status_yn = :download_status_yn")
         params["download_status_yn"] = download_status_yn
     if search:
-        where.append("title ILIKE :search")
+        where.append("r.article_title ILIKE :search")
         params["search"] = f"%{search}%"
 
     where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-    allowed_sorts = {"report_id DESC", "report_id ASC", "created_at DESC", "created_at ASC", "reg_dt DESC", "reg_dt ASC"}
-    sort_col = sort if sort in allowed_sorts else "report_id DESC"
+    # sort: prefix r. for reports table columns
+    _raw_sort = sort
+    if sort in {"report_id DESC", "report_id ASC", "reg_dt DESC", "reg_dt ASC"}:
+        sort_col = f"r.{sort}"
+    else:
+        sort_col = "r.report_id DESC"
 
-    total = db.execute(text(f"SELECT COUNT(*) FROM tbl_sec_reports_pdf_archive {where_clause}"), params).scalar() or 0
+    # FROM 절: reports(모든 레코드) + LEFT JOIN archive(시도된 것만)
+    FROM = "FROM tbl_sec_reports r LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id"
+
+    total = db.execute(text(f"SELECT COUNT(*) {FROM} {where_clause}"), params).scalar() or 0
 
     # Summary: 전체 집계 (필터 무관)
-    # 완료 = archive_status='ARCHIVED' 이면서 pdf_sync_status가 실패(3,9,-1)가 아닌 건
-    # ※ sync_status는 pdf-archiver가 갱신하지 않는 legacy 컬럼. pdf_sync_status로 집계.
+    # total = 모든 tbl_sec_reports, archived = archive_status='ARCHIVED' + pdf_sync 성공
     summary_total = db.execute(
-        text("SELECT COUNT(*) FROM tbl_sec_reports_pdf_archive")
+        text("SELECT COUNT(*) FROM tbl_sec_reports")
     ).scalar() or 0
     summary_archived = db.execute(
-        text("SELECT COUNT(*) FROM tbl_sec_reports_pdf_archive WHERE archive_status = 'ARCHIVED' AND COALESCE(pdf_sync_status, 0) NOT IN (3, 9, -1)")
+        text("""
+            SELECT COUNT(*) FROM tbl_sec_reports r
+            INNER JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id
+            WHERE a.archive_status = 'ARCHIVED'
+              AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)
+        """)
     ).scalar() or 0
     summary_failed = summary_total - summary_archived
 
@@ -400,12 +411,14 @@ async def list_pdf_archive(
 
     rows = db.execute(
         text(
-            f"SELECT report_id, firm_nm, title, reg_dt, author, file_name, file_size, page_count, "
-            f"archive_status, storage_backend, download_status_yn, sync_status, pdf_sync_status, retry_count, "
-            f"has_text, is_encrypted, "
-            f"to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, "
-            f"to_char(updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at "
-            f"FROM tbl_sec_reports_pdf_archive {where_clause} "
+            f"SELECT r.report_id, r.firm_nm, r.article_title as title, r.reg_dt, "
+            f"a.author, a.file_name, a.file_size, a.page_count, "
+            f"a.archive_status, a.storage_backend, a.download_status_yn, "
+            f"a.sync_status, a.pdf_sync_status, a.retry_count, "
+            f"a.has_text, a.is_encrypted, "
+            f"to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, "
+            f"to_char(a.updated_at, 'YYYY-MM-DD HH24:MI:SS') as updated_at "
+            f"{FROM} {where_clause} "
             f"ORDER BY {sort_col} LIMIT :limit OFFSET :offset"
         ),
         {**params, "limit": page_size, "offset": offset},
@@ -433,16 +446,17 @@ async def pdf_archive_stats_daily(
     current_admin: dict = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """일별 PDF 아카이브 통계 (생성일 기준)"""
+    """일별 PDF 아카이브 통계 (레포트 등록일 기준, LEFT JOIN)"""
     rows = db.execute(
         text(
-            "SELECT to_char(created_at::date, 'YYYY-MM-DD') as dt, "
+            "SELECT r.reg_dt as dt, "
             "COUNT(*) as total, "
-            "COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED' AND COALESCE(pdf_sync_status, 0) NOT IN (3, 9, -1)) as archived, "
-            "COUNT(*) - COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED' AND COALESCE(pdf_sync_status, 0) NOT IN (3, 9, -1)) as failed "
-            "FROM tbl_sec_reports_pdf_archive "
-            "WHERE created_at >= now() - (:days || ' days')::interval "
-            "GROUP BY created_at::date ORDER BY dt DESC"
+            "COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as archived, "
+            "COUNT(*) - COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as failed "
+            "FROM tbl_sec_reports r "
+            "LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id "
+            "WHERE r.reg_dt >= to_char(now() - (:days || ' days')::interval, 'YYYYMMDD') "
+            "GROUP BY r.reg_dt ORDER BY dt DESC"
         ),
         {"days": str(days)},
     ).fetchall()
@@ -454,15 +468,16 @@ async def pdf_archive_stats_by_firm(
     current_admin: dict = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """증권사별 PDF 아카이브 성공/실패 통계"""
+    """증권사별 PDF 아카이브 성공/실패 통계 (LEFT JOIN)"""
     rows = db.execute(
         text(
-            "SELECT COALESCE(firm_nm, 'Unknown') as firm_nm, "
+            "SELECT COALESCE(r.firm_nm, 'Unknown') as firm_nm, "
             "COUNT(*) as total, "
-            "COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED' AND COALESCE(pdf_sync_status, 0) NOT IN (3, 9, -1)) as archived, "
-            "COUNT(*) - COUNT(*) FILTER (WHERE archive_status = 'ARCHIVED' AND COALESCE(pdf_sync_status, 0) NOT IN (3, 9, -1)) as failed "
-            "FROM tbl_sec_reports_pdf_archive "
-            "GROUP BY firm_nm ORDER BY total DESC"
+            "COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as archived, "
+            "COUNT(*) - COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as failed "
+            "FROM tbl_sec_reports r "
+            "LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id "
+            "GROUP BY r.firm_nm ORDER BY total DESC"
         ),
     ).fetchall()
     return [FirmPdfStats(firm_nm=r[0], total=r[1], archived=r[2], failed=r[3]) for r in rows]

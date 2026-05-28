@@ -167,6 +167,12 @@ class MockDBSession:
                         MockRow("2025-01-01", 50, 45, 5),
                         MockRow("2025-01-02", 30, 28, 2),
                     ])
+                elif "reg_dt" in stmt_lower:
+                    # pdf_archive_stats_daily — GROUP BY r.reg_dt
+                    return MockResult([
+                        MockRow("20250101", 50, 45, 5),
+                        MockRow("20250102", 30, 28, 2),
+                    ])
                 else:
                     return MockResult([MockRow(100)])
             elif "count(*)" in stmt_lower:
@@ -177,7 +183,7 @@ class MockDBSession:
                 elif "archive_status !=" in stmt_lower or "archive_status is null" in stmt_lower:
                     return MockResult([MockRow(10)])
                 return MockResult([MockRow(100)])
-            elif "select report_id, firm_nm, title" in stmt_lower:
+            elif "report_id,firm_nm" in stmt_lower.replace(" ", "").replace("r.", ""):
                 # list_pdf_archive — 17개 컬럼
                 return MockResult([
                     MockRow(100, "하나증권", "Title", "20250101", "Author", "file.pdf", 1024000, 10,
