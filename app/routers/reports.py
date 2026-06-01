@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -599,6 +598,13 @@ async def diagnose_pdf_download(
 
     article_url = row[0]
     result = DiagnoseResponse(report_id=report_id, article_url=article_url)
+
+    try:
+        import httpx
+    except ImportError:
+        result.reachable = False
+        result.error = "httpx 라이브러리가 설치되지 않았습니다"
+        return result
 
     try:
         start = time.monotonic()
