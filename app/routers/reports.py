@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -135,6 +136,7 @@ class PdfArchiveItemOut(BaseModel):
     is_encrypted: Optional[bool] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    article_url: Optional[str] = None
 
 
 class PdfArchiveSummary(BaseModel):
@@ -180,6 +182,18 @@ class ReprocessResponse(BaseModel):
     matched: int
     updated: int
     message: str
+
+
+class DiagnoseResponse(BaseModel):
+    """PDF 다운로드 URL 진단 결과"""
+    report_id: int
+    article_url: Optional[str] = None
+    reachable: bool = False
+    http_status: Optional[int] = None
+    content_type: Optional[str] = None
+    content_length: Optional[int] = None
+    elapsed_ms: Optional[float] = None
+    error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +425,7 @@ async def list_pdf_archive(
 
     rows = db.execute(
         text(
-            f"SELECT r.report_id, r.firm_nm, r.article_title as title, r.reg_dt, "
+            f"SELECT r.report_id, r.firm_nm, r.article_title as title, r.reg_dt, r.article_url, "
             f"a.author, a.file_name, a.file_size, a.page_count, "
             f"a.archive_status, a.storage_backend, a.download_status_yn, "
             f"a.sync_status, a.pdf_sync_status, a.retry_count, "
@@ -426,11 +440,11 @@ async def list_pdf_archive(
 
     items = [
         PdfArchiveItemOut(
-            report_id=r[0], firm_nm=r[1], title=r[2], reg_dt=r[3], author=r[4],
-            file_name=r[5], file_size=r[6], page_count=r[7], archive_status=r[8],
-            storage_backend=r[9], download_status_yn=r[10], sync_status=r[11] or 0,
-            pdf_sync_status=r[12] or 0, retry_count=r[13] or 0,
-            has_text=r[14], is_encrypted=r[15], created_at=r[16], updated_at=r[17],
+            report_id=r[0], firm_nm=r[1], title=r[2], reg_dt=r[3], article_url=r[4],
+            author=r[5], file_name=r[6], file_size=r[7], page_count=r[8], archive_status=r[9],
+            storage_backend=r[10], download_status_yn=r[11], sync_status=r[12] or 0,
+            pdf_sync_status=r[13] or 0, retry_count=r[14] or 0,
+            has_text=r[15], is_encrypted=r[16], created_at=r[17], updated_at=r[18],
         )
         for r in rows
     ]
@@ -560,6 +574,56 @@ async def reprocess_pdf_archive(
         updated=updated,
         message=f"{updated}건 재처리 요청 완료 (전체 대상: {matched}건)",
     )
+
+
+@router.post("/pdf-archive/{report_id}/diagnose", response_model=DiagnoseResponse)
+async def diagnose_pdf_download(
+    report_id: int,
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """PDF 원본 URL 접속 진단 — 서버에서 직접 URL에 접근하여 응답 상태 확인"""
+    import time
+
+    row = db.execute(
+        text("SELECT article_url FROM tbl_sec_reports WHERE report_id = :rid"),
+        {"rid": report_id},
+    ).first()
+
+    if not row or not row[0]:
+        return DiagnoseResponse(
+            report_id=report_id,
+            reachable=False,
+            error="article_url이 존재하지 않습니다 (레포트가 없거나 URL이 NULL)",
+        )
+
+    article_url = row[0]
+    result = DiagnoseResponse(report_id=report_id, article_url=article_url)
+
+    try:
+        start = time.monotonic()
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.head(article_url)
+            elapsed = (time.monotonic() - start) * 1000
+
+            result.reachable = resp.is_success or resp.status_code < 400
+            result.http_status = resp.status_code
+            result.content_type = resp.headers.get("content-type", "")
+            cl = resp.headers.get("content-length")
+            result.content_length = int(cl) if cl and cl.isdigit() else None
+            result.elapsed_ms = round(elapsed, 1)
+
+    except httpx.TimeoutException:
+        result.reachable = False
+        result.error = "연결 시간 초과 (15초)"
+    except httpx.ConnectError as e:
+        result.reachable = False
+        result.error = f"연결 실패: {e}"
+    except Exception as e:
+        result.reachable = False
+        result.error = f"오류: {type(e).__name__}: {e}"
+
+    return result
 
 
 # ── /{report_id} 이하 (파라미터 라우트 — 정적 경로 뒤에 위치) ──────────────

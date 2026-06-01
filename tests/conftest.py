@@ -184,12 +184,12 @@ class MockDBSession:
                     return MockResult([MockRow(10)])
                 return MockResult([MockRow(100)])
             elif "report_id,firm_nm" in stmt_lower.replace(" ", "").replace("r.", ""):
-                # list_pdf_archive — 17개 컬럼
+                # list_pdf_archive — 19개 컬럼 (article_url 추가)
                 return MockResult([
-                    MockRow(100, "하나증권", "Title", "20250101", "Author", "file.pdf", 1024000, 10,
+                    MockRow(100, "하나증권", "Title", "20250101", "https://example.com/report/100", "Author", "file.pdf", 1024000, 10,
                             "ARCHIVED", "onedrive", "Y", 2, 2, 0, True, False,
                             "2025-01-01 12:00:00", "2025-01-01 12:00:00"),
-                    MockRow(101, "KB증권", "Title2", "20250102", "Author2", "file2.pdf", 2048000, 20,
+                    MockRow(101, "KB증권", "Title2", "20250102", "https://example.com/report/101", "Author2", "file2.pdf", 2048000, 20,
                             "INIT", "onedrive", "N", 0, 0, 3, False, True,
                             "2025-01-02 12:00:00", "2025-01-02 12:00:00"),
                 ])
