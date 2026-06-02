@@ -3,8 +3,8 @@ services:
     image: ghcr.io/liante0904/ssh-management-hub-fastapi:latest
     container_name: ssh-management-hub-fastapi-prod
     user: "1001:1001"
-    ports:
-      - "8003:8000"
+    expose:
+      - "8000"
     volumes:
       - .:/app
       - /home/ubuntu/logs:/host-logs:ro
