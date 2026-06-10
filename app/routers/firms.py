@@ -179,8 +179,9 @@ async def update_firm(
     for field in ("firm_nm", "telegram_update_yn", "\"COMMENT_PDF_URL\"", "ga_enabled_yn"):
         val = getattr(body, field.replace('"', ''), None)
         if val is not None:
-            updates.append(f"{field} = :{field.replace('\"', '')}")
-            params[field.replace('"', '')] = val
+            clean_field = field.replace('"', '')
+            updates.append(f"{field} = :{clean_field}")
+            params[clean_field] = val
 
     if updates:
         db.execute(text(f"UPDATE tbm_sec_firm_info SET {', '.join(updates)} WHERE sec_firm_order = :oid"), params)
