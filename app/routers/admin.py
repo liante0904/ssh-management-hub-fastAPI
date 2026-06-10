@@ -286,6 +286,9 @@ def get_oci2_metrics():
 
         return metrics if metrics else None
 
+    except FileNotFoundError:
+        logger.warning("SSH command not found on this system")
+        return None
     except subprocess.TimeoutExpired:
         logger.warning("OCI2 SSH timed out after %ds", oci2_timeout)
         return None
@@ -296,7 +299,12 @@ def get_oci2_metrics():
 
 def get_oci_metrics():
     """OCI (배포서버=자기자신) 메트릭을 로컬 psutil로 수집"""
-    import psutil as _psutil
+    try:
+        import psutil as _psutil
+    except ImportError:
+        logger.warning("psutil not installed, skipping OCI metrics")
+        return None
+
     try:
         cpu = _psutil.cpu_percent(interval=0.3)
         mem = _psutil.virtual_memory()
