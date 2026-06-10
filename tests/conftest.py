@@ -110,13 +110,13 @@ class MockDBSession:
                 self._committed = True
                 return MockResult([MockRow(1)])
             elif "where sec_firm_order = " in stmt_lower.replace(" ", ""):
-                return MockResult([MockRow(1, "Test Securities", "Y", None)])
+                return MockResult([MockRow(1, "Test Securities", "Y", None, "N")])
             elif "select 1" in stmt_lower:
                 return MockResult([MockRow(1)])
             else:
                 return MockResult([
-                    MockRow(1, "Test Securities", "Y", None),
-                    MockRow(2, "Another Firm", "N", "https://example.com"),
+                    MockRow(1, "Test Securities", "Y", None, "N"),
+                    MockRow(2, "Another Firm", "N", "https://example.com", "N"),
                 ])
 
         if "tbm_sec_firm_board_info" in stmt_lower:

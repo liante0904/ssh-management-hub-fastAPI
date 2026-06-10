@@ -21,7 +21,7 @@ from jose import JWTError, jwt
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..database import SessionLocal, get_db
+from ..database import get_db
 
 load_dotenv()
 
@@ -100,7 +100,10 @@ async def health_check(current_user: dict = Depends(get_current_admin)):
 
 
 @router.get("/metrics")
-async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
+async def get_system_metrics(
+    current_user: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
     """시스템 메트릭 (CPU, RAM, Disk, DB 상태, 레포트 통계)"""
     try:
         # --- CPU ---
@@ -133,13 +136,11 @@ async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
         db_ok = False
         db_latency_ms = None
         try:
-            db = SessionLocal()
             t0 = time.time()
             db.execute(text("SELECT 1"))
             t1 = time.time()
             db_ok = True
             db_latency_ms = round((t1 - t0) * 1000, 1)
-            db.close()
         except Exception as e:
             logger.warning("DB health check failed: %s", e)
 
@@ -150,7 +151,6 @@ async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
         last_report_title = None
         last_report_firm = None
         try:
-            db = SessionLocal()
             result = db.execute(text("SELECT COUNT(*) FROM tbl_sec_reports")).scalar()
             total_reports = result or 0
 
@@ -168,7 +168,6 @@ async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
                 last_report_time = latest[0]
                 last_report_title = latest[1]
                 last_report_firm = latest[2]
-            db.close()
         except Exception as e:
             logger.warning("Report stats query failed: %s", e)
 
