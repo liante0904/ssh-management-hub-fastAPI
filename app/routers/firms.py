@@ -32,6 +32,7 @@ class FirmInfoOut(BaseModel):
     firm_nm: str
     telegram_update_yn: Optional[str] = "N"
     COMMENT_PDF_URL: Optional[str] = None
+    ga_enabled_yn: str = "N"
 
 
 class FirmInfoCreate(BaseModel):
@@ -39,12 +40,14 @@ class FirmInfoCreate(BaseModel):
     firm_nm: str
     telegram_update_yn: Optional[str] = "N"
     COMMENT_PDF_URL: Optional[str] = None
+    ga_enabled_yn: Optional[str] = "N"
 
 
 class FirmInfoUpdate(BaseModel):
     firm_nm: Optional[str] = None
     telegram_update_yn: Optional[str] = None
     COMMENT_PDF_URL: Optional[str] = None
+    ga_enabled_yn: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +94,7 @@ async def list_firms(
     if search:
         rows = db.execute(
             text(
-                "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\" "
+                "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\", ga_enabled_yn "
                 "FROM tbm_sec_firm_info WHERE firm_nm ILIKE :search ORDER BY sec_firm_order"
             ),
             {"search": f"%{search}%"},
@@ -99,11 +102,11 @@ async def list_firms(
     else:
         rows = db.execute(
             text(
-                "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\" "
+                "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\", ga_enabled_yn "
                 "FROM tbm_sec_firm_info ORDER BY sec_firm_order"
             )
         ).fetchall()
-    return [FirmInfoOut(sec_firm_order=r[0], firm_nm=r[1], telegram_update_yn=r[2], COMMENT_PDF_URL=r[3]) for r in rows]
+    return [FirmInfoOut(sec_firm_order=r[0], firm_nm=r[1], telegram_update_yn=r[2], COMMENT_PDF_URL=r[3], ga_enabled_yn=r[4]) for r in rows]
 
 
 @router.get("/{sec_firm_order}", response_model=FirmInfoOut)
@@ -115,14 +118,14 @@ async def get_firm(
     """증권사 상세"""
     row = db.execute(
         text(
-            "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\" "
+            "SELECT sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\", ga_enabled_yn "
             "FROM tbm_sec_firm_info WHERE sec_firm_order = :oid"
         ),
         {"oid": sec_firm_order},
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Firm not found")
-    return FirmInfoOut(sec_firm_order=row[0], firm_nm=row[1], telegram_update_yn=row[2], COMMENT_PDF_URL=row[3])
+    return FirmInfoOut(sec_firm_order=row[0], firm_nm=row[1], telegram_update_yn=row[2], COMMENT_PDF_URL=row[3], ga_enabled_yn=row[4])
 
 
 @router.post("", status_code=201)
@@ -141,14 +144,15 @@ async def create_firm(
 
     db.execute(
         text(
-            "INSERT INTO tbm_sec_firm_info (sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\") "
-            "VALUES (:oid, :firm_nm, :telegram_update_yn, :COMMENT_PDF_URL)"
+            "INSERT INTO tbm_sec_firm_info (sec_firm_order, firm_nm, telegram_update_yn, \"COMMENT_PDF_URL\", ga_enabled_yn) "
+            "VALUES (:oid, :firm_nm, :telegram_update_yn, :COMMENT_PDF_URL, :ga_enabled_yn)"
         ),
         {
             "oid": body.sec_firm_order,
             "firm_nm": body.firm_nm,
             "telegram_update_yn": body.telegram_update_yn,
             "COMMENT_PDF_URL": body.COMMENT_PDF_URL,
+            "ga_enabled_yn": body.ga_enabled_yn,
         },
     )
     db.commit()
@@ -172,7 +176,7 @@ async def update_firm(
 
     updates = []
     params = {"oid": sec_firm_order}
-    for field in ("firm_nm", "telegram_update_yn", "\"COMMENT_PDF_URL\""):
+    for field in ("firm_nm", "telegram_update_yn", "\"COMMENT_PDF_URL\"", "ga_enabled_yn"):
         val = getattr(body, field.replace('"', ''), None)
         if val is not None:
             updates.append(f"{field} = :{field.replace('\"', '')}")
