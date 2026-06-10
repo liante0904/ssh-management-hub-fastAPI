@@ -102,114 +102,118 @@ async def health_check(current_user: dict = Depends(get_current_admin)):
 @router.get("/metrics")
 async def get_system_metrics(current_user: dict = Depends(get_current_admin)):
     """시스템 메트릭 (CPU, RAM, Disk, DB 상태, 레포트 통계)"""
-    # --- CPU ---
-    cpu_percent = psutil.cpu_percent(interval=0.5)
-    cpu_count = psutil.cpu_count()
-    cpu_freq = psutil.cpu_freq()
-    cpu_freq_mhz = round(cpu_freq.current, 1) if cpu_freq else None
-
-    # --- Memory ---
-    mem = psutil.virtual_memory()
-    mem_total_gb = round(mem.total / (1024 ** 3), 2)
-    mem_used_gb = round(mem.used / (1024 ** 3), 2)
-    mem_percent = mem.percent
-
-    # --- Disk ---
-    disk_path = os.getenv("DISK_CHECK_PATH", "/")
     try:
-        disk = psutil.disk_usage(disk_path)
-        disk_total_gb = round(disk.total / (1024 ** 3), 1)
-        disk_used_gb = round(disk.used / (1024 ** 3), 1)
-        disk_percent = disk.percent
-    except Exception:
-        disk_total_gb = disk_used_gb = disk_percent = 0
+        # --- CPU ---
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+        cpu_count = psutil.cpu_count()
+        cpu_freq = psutil.cpu_freq()
+        cpu_freq_mhz = round(cpu_freq.current, 1) if cpu_freq else None
 
-    # --- Uptime ---
-    boot_time = datetime.fromtimestamp(psutil.boot_time())
-    uptime_days = round((datetime.now() - boot_time).total_seconds() / 86400, 1)
+        # --- Memory ---
+        mem = psutil.virtual_memory()
+        mem_total_gb = round(mem.total / (1024 ** 3), 2)
+        mem_used_gb = round(mem.used / (1024 ** 3), 2)
+        mem_percent = mem.percent
 
-    # --- DB health ---
-    db_ok = False
-    db_latency_ms = None
-    try:
-        db = SessionLocal()
-        t0 = time.time()
-        db.execute(text("SELECT 1"))
-        t1 = time.time()
-        db_ok = True
-        db_latency_ms = round((t1 - t0) * 1000, 1)
-        db.close()
+        # --- Disk ---
+        disk_path = os.getenv("DISK_CHECK_PATH", "/")
+        try:
+            disk = psutil.disk_usage(disk_path)
+            disk_total_gb = round(disk.total / (1024 ** 3), 1)
+            disk_used_gb = round(disk.used / (1024 ** 3), 1)
+            disk_percent = disk.percent
+        except Exception:
+            disk_total_gb = disk_used_gb = disk_percent = 0
+
+        # --- Uptime ---
+        boot_time = datetime.fromtimestamp(psutil.boot_time())
+        uptime_days = round((datetime.now() - boot_time).total_seconds() / 86400, 1)
+
+        # --- DB health ---
+        db_ok = False
+        db_latency_ms = None
+        try:
+            db = SessionLocal()
+            t0 = time.time()
+            db.execute(text("SELECT 1"))
+            t1 = time.time()
+            db_ok = True
+            db_latency_ms = round((t1 - t0) * 1000, 1)
+            db.close()
+        except Exception as e:
+            logger.warning("DB health check failed: %s", e)
+
+        # --- Report stats ---
+        total_reports = 0
+        today_reports = 0
+        last_report_time = None
+        last_report_title = None
+        last_report_firm = None
+        try:
+            db = SessionLocal()
+            result = db.execute(text("SELECT COUNT(*) FROM tbl_sec_reports")).scalar()
+            total_reports = result or 0
+
+            today_str = datetime.now().strftime("%Y%m%d")
+            today_result = db.execute(
+                text("SELECT COUNT(*) FROM tbl_sec_reports WHERE reg_dt = :dt"),
+                {"dt": today_str},
+            ).scalar()
+            today_reports = today_result or 0
+
+            latest = db.execute(
+                text("SELECT save_time, article_title, firm_nm FROM tbl_sec_reports ORDER BY save_time DESC LIMIT 1")
+            ).first()
+            if latest:
+                last_report_time = latest[0]
+                last_report_title = latest[1]
+                last_report_firm = latest[2]
+            db.close()
+        except Exception as e:
+            logger.warning("Report stats query failed: %s", e)
+
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "overall": "online" if db_ok else "degraded",
+            "system": {
+                "hostname": os.uname().nodename,
+                "uptime_days": uptime_days,
+                "python_version": __import__("sys").version,
+            },
+            "cpu": {
+                "percent": cpu_percent,
+                "cores": cpu_count,
+                "frequency_mhz": cpu_freq_mhz,
+            },
+            "memory": {
+                "total_gb": mem_total_gb,
+                "used_gb": mem_used_gb,
+                "percent": mem_percent,
+            },
+            "disk": {
+                "total_gb": disk_total_gb,
+                "used_gb": disk_used_gb,
+                "percent": disk_percent,
+            },
+            "oci": get_oci_metrics(),
+            "oci2": get_oci2_metrics(),
+            "database": {
+                "status": "online" if db_ok else "offline",
+                "latency_ms": db_latency_ms,
+            },
+            "reports": {
+                "total": total_reports,
+                "today_inserts": today_reports,
+            },
+            "last_activity": {
+                "last_save_time": last_report_time,
+                "last_title": last_report_title,
+                "last_firm": last_report_firm,
+            },
+        }
     except Exception as e:
-        logger.warning("DB health check failed: %s", e)
-
-    # --- Report stats ---
-    total_reports = 0
-    today_reports = 0
-    last_report_time = None
-    last_report_title = None
-    last_report_firm = None
-    try:
-        db = SessionLocal()
-        result = db.execute(text("SELECT COUNT(*) FROM tbl_sec_reports")).scalar()
-        total_reports = result or 0
-
-        today_str = datetime.now().strftime("%Y%m%d")
-        today_result = db.execute(
-            text("SELECT COUNT(*) FROM tbl_sec_reports WHERE reg_dt = :dt"),
-            {"dt": today_str},
-        ).scalar()
-        today_reports = today_result or 0
-
-        latest = db.execute(
-            text("SELECT save_time, article_title, firm_nm FROM tbl_sec_reports ORDER BY save_time DESC LIMIT 1")
-        ).first()
-        if latest:
-            last_report_time = latest[0]
-            last_report_title = latest[1]
-            last_report_firm = latest[2]
-        db.close()
-    except Exception as e:
-        logger.warning("Report stats query failed: %s", e)
-
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "overall": "online" if db_ok else "degraded",
-        "system": {
-            "hostname": os.uname().nodename,
-            "uptime_days": uptime_days,
-            "python_version": __import__("sys").version,
-        },
-        "cpu": {
-            "percent": cpu_percent,
-            "cores": cpu_count,
-            "frequency_mhz": cpu_freq_mhz,
-        },
-        "memory": {
-            "total_gb": mem_total_gb,
-            "used_gb": mem_used_gb,
-            "percent": mem_percent,
-        },
-        "disk": {
-            "total_gb": disk_total_gb,
-            "used_gb": disk_used_gb,
-            "percent": disk_percent,
-        },
-        "oci": get_oci_metrics(),
-        "oci2": get_oci2_metrics(),
-        "database": {
-            "status": "online" if db_ok else "offline",
-            "latency_ms": db_latency_ms,
-        },
-        "reports": {
-            "total": total_reports,
-            "today_inserts": today_reports,
-        },
-        "last_activity": {
-            "last_save_time": last_report_time,
-            "last_title": last_report_title,
-            "last_firm": last_report_firm,
-        },
-    }
+        logger.error("get_system_metrics failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Metrics collection failed: {str(e)[:200]}")
 
 
 def get_oci2_metrics():
@@ -300,15 +304,9 @@ def get_oci2_metrics():
 def get_oci_metrics():
     """OCI (배포서버=자기자신) 메트릭을 로컬 psutil로 수집"""
     try:
-        import psutil as _psutil
-    except ImportError:
-        logger.warning("psutil not installed, skipping OCI metrics")
-        return None
-
-    try:
-        cpu = _psutil.cpu_percent(interval=0.3)
-        mem = _psutil.virtual_memory()
-        disk = _psutil.disk_usage("/")
+        cpu = psutil.cpu_percent(interval=0.3)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
         return {
             "cpu_percent": round(cpu, 1),
             "total_gb": round(mem.total / (1024**3), 2),
