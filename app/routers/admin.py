@@ -156,13 +156,13 @@ async def get_system_metrics(
 
             today_str = datetime.now().strftime("%Y%m%d")
             today_result = db.execute(
-                text("SELECT COUNT(*) FROM tbl_sec_reports WHERE reg_dt = :dt"),
+                text("SELECT COUNT(*) FROM tbl_sec_reports WHERE to_char(report_date, 'YYYYMMDD') = :dt"),
                 {"dt": today_str},
             ).scalar()
             today_reports = today_result or 0
 
             latest = db.execute(
-                text("SELECT save_time, article_title, firm_nm FROM tbl_sec_reports ORDER BY save_time DESC LIMIT 1")
+                text("SELECT save_at, article_title, firm_nm FROM tbl_sec_reports ORDER BY save_at DESC LIMIT 1")
             ).first()
             if latest:
                 last_report_time = latest[0]

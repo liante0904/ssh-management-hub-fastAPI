@@ -81,8 +81,8 @@ def _run_scraper(firm_key: str) -> dict:
 
     # Date stats
     from collections import Counter
-    dates = Counter(r.get("reg_dt", "?") for r in result)
-    bad_dates = sum(1 for r in result if not str(r.get("reg_dt", "")).isdigit() or len(str(r.get("reg_dt", ""))) != 8)
+    dates = Counter(r.get("reg_dt") or r.get("report_date", "?") for r in result)
+    bad_dates = sum(1 for r in result if not str(r.get("reg_dt") or r.get("report_date", "")).isdigit() or len(str(r.get("reg_dt") or r.get("report_date", ""))) != 8)
     missing_key = sum(1 for r in result if not (r.get("report_unique_key") or r.get("key")))
 
     return {

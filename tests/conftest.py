@@ -167,8 +167,8 @@ class MockDBSession:
                         MockRow("2025-01-01", 50, 45, 5),
                         MockRow("2025-01-02", 30, 28, 2),
                     ])
-                elif "reg_dt" in stmt_lower:
-                    # pdf_archive_stats_daily — GROUP BY r.reg_dt
+                elif "report_date" in stmt_lower:
+                    # pdf_archive_stats_daily — GROUP BY to_char(r.report_date, 'YYYYMMDD')
                     return MockResult([
                         MockRow("20250101", 50, 45, 5),
                         MockRow("20250102", 30, 28, 2),

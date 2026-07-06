@@ -212,7 +212,7 @@ async def list_reports(
     reg_dt: Optional[str] = Query(None, description="등록일자 (YYYYMMDD)"),
     sync_status: Optional[int] = Query(None, description="0=대기, 1=처리중, 2=완료, -1=실패"),
     search: Optional[str] = Query(None, description="제목 검색"),
-    sort: Optional[str] = Query("save_time DESC", description="정렬 (save_time DESC | reg_dt DESC)"),
+    sort: Optional[str] = Query("save_at DESC", description="정렬 (save_at DESC | report_date DESC)"),
     current_admin: dict = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -224,7 +224,7 @@ async def list_reports(
         where.append("firm_nm ILIKE :firm_nm")
         params["firm_nm"] = f"%{firm_nm}%"
     if reg_dt:
-        where.append("reg_dt = :reg_dt")
+        where.append("to_char(report_date, 'YYYYMMDD') = :reg_dt")
         params["reg_dt"] = reg_dt
     if sync_status is not None:
         where.append("sync_status = :sync_status")
@@ -235,9 +235,16 @@ async def list_reports(
 
     where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-    # sort whitelist
-    allowed_sorts = {"save_time DESC", "save_time ASC", "reg_dt DESC", "reg_dt ASC", "report_id DESC", "report_id ASC"}
-    sort_col = sort if sort in allowed_sorts else "save_time DESC"
+    # sort whitelist — accept old names (backward compat) and new names, normalize underscores
+    _normalized = sort.replace("_", " ") if sort else ""
+    _sort_map = {
+        "save time DESC": "save_at DESC", "save time ASC": "save_at ASC",
+        "reg dt DESC": "report_date DESC", "reg dt ASC": "report_date ASC",
+        "save at DESC": "save_at DESC", "save at ASC": "save_at ASC",
+        "report date DESC": "report_date DESC", "report date ASC": "report_date ASC",
+        "report id DESC": "report_id DESC", "report id ASC": "report_id ASC",
+    }
+    sort_col = _sort_map.get(_normalized, "save_at DESC")
 
     total_row = db.execute(text(f"SELECT COUNT(*) FROM tbl_sec_reports {where_clause}"), params).scalar()
     total = total_row or 0
@@ -245,7 +252,8 @@ async def list_reports(
     offset = (page - 1) * page_size
     rows = db.execute(
         text(
-            f"SELECT report_id, firm_nm, article_title, article_url, writer, save_time, reg_dt, mkt_tp, "
+            f"SELECT report_id, firm_nm, article_title, article_url, writer, "
+            f"save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             f"download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             f"FROM tbl_sec_reports {where_clause} "
             f"ORDER BY {sort_col} LIMIT :limit OFFSET :offset"
@@ -376,7 +384,7 @@ async def list_pdf_archive(
         where.append("a.archive_status = :archive_status")
         params["archive_status"] = archive_status
     if reg_dt:
-        where.append("r.reg_dt = :reg_dt")
+        where.append("to_char(r.report_date, 'YYYYMMDD') = :reg_dt")
         params["reg_dt"] = reg_dt
     if sync_status is not None:
         where.append("a.sync_status = :sync_status")
@@ -393,12 +401,15 @@ async def list_pdf_archive(
 
     where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-    # sort: prefix r. for reports table columns
-    _raw_sort = sort
-    if sort in {"report_id DESC", "report_id ASC", "reg_dt DESC", "reg_dt ASC"}:
-        sort_col = f"r.{sort}"
-    else:
-        sort_col = "r.report_id DESC"
+    # sort: prefix r. for reports table columns; accept old reg_dt and new report_date names
+    # Also normalize snake_case (from frontend) to space-separated
+    _normalized = sort.replace("_", " ") if sort else ""
+    _sort_map = {
+        "report id DESC": "r.report_id DESC", "report id ASC": "r.report_id ASC",
+        "reg dt DESC": "r.report_date DESC", "reg dt ASC": "r.report_date ASC",
+        "report date DESC": "r.report_date DESC", "report date ASC": "r.report_date ASC",
+    }
+    sort_col = _sort_map.get(_normalized, "r.report_id DESC")
 
     # FROM 절: reports(모든 레코드) + LEFT JOIN archive(시도된 것만)
     FROM = "FROM tbl_sec_reports r LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id"
@@ -424,7 +435,7 @@ async def list_pdf_archive(
 
     rows = db.execute(
         text(
-            f"SELECT r.report_id, r.firm_nm, r.article_title as title, r.reg_dt, r.article_url, "
+            f"SELECT r.report_id, r.firm_nm, r.article_title as title, to_char(r.report_date, 'YYYYMMDD') as reg_dt, r.article_url, "
             f"a.author, a.file_name, a.file_size, a.page_count, "
             f"a.archive_status, a.storage_backend, a.download_status_yn, "
             f"a.sync_status, a.pdf_sync_status, a.retry_count, "
@@ -462,14 +473,14 @@ async def pdf_archive_stats_daily(
     """일별 PDF 아카이브 통계 (레포트 등록일 기준, LEFT JOIN)"""
     rows = db.execute(
         text(
-            "SELECT r.reg_dt as dt, "
+            "SELECT to_char(r.report_date, 'YYYYMMDD') as dt, "
             "COUNT(*) as total, "
             "COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as archived, "
             "COUNT(*) - COUNT(*) FILTER (WHERE a.archive_status = 'ARCHIVED' AND COALESCE(a.pdf_sync_status, 0) NOT IN (3, 9, -1)) as failed "
             "FROM tbl_sec_reports r "
             "LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id "
-            "WHERE r.reg_dt >= to_char(now() - (:days || ' days')::interval, 'YYYYMMDD') "
-            "GROUP BY r.reg_dt ORDER BY dt DESC"
+            "WHERE r.report_date >= (now() - (:days || ' days')::interval)::date "
+            "GROUP BY to_char(r.report_date, 'YYYYMMDD') ORDER BY dt DESC"
         ),
         {"days": str(days)},
     ).fetchall()
@@ -519,7 +530,7 @@ async def reprocess_pdf_archive(
             where.append("firm_nm ILIKE :firm_nm")
             params["firm_nm"] = f"%{body.firm_nm}%"
         if body.reg_dt:
-            where.append("reg_dt = :reg_dt")
+            where.append("report_date = :reg_dt")
             params["reg_dt"] = body.reg_dt
         if body.sync_status is not None:
             where.append("sync_status = :sync_status")
@@ -644,7 +655,8 @@ async def get_report(
     """레포트 상세 조회"""
     row = db.execute(
         text(
-            "SELECT report_id, firm_nm, article_title, article_url, writer, save_time, reg_dt, mkt_tp, "
+            "SELECT report_id, firm_nm, article_title, article_url, writer, "
+            "save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             "download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             "FROM tbl_sec_reports WHERE report_id = :rid"
         ),
