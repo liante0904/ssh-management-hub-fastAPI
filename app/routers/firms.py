@@ -84,7 +84,7 @@ class FirmBoardUpdate(BaseModel):
 
 # Pydantic 필드명 → 예상 DB 컬럼명 (소문자). 실제 컬럼 존재 여부는 _get_columns() 로 확인
 _FIRM_PYDANTIC_TO_DB = {
-    "sec_firm_order": "sec_firm_order",
+    "sec_firm_order": "firm_id",
     "firm_nm": "firm_nm",
     "telegram_update_yn": "telegram_update_yn",
     "COMMENT_PDF_URL": "comment_pdf_url",
@@ -92,8 +92,8 @@ _FIRM_PYDANTIC_TO_DB = {
 }
 
 _BOARD_PYDANTIC_TO_DB = {
-    "sec_firm_order": "sec_firm_order",
-    "article_board_order": "article_board_order",
+    "sec_firm_order": "firm_id",
+    "article_board_order": "board_id",
     "board_nm": "board_nm",
     "board_cd": "board_cd",
     "label_nm": "label_nm",
@@ -166,13 +166,13 @@ async def list_firms(
         rows = db.execute(
             text(
                 f"SELECT {col_str} FROM tbm_sec_firm_info "
-                f"WHERE firm_nm ILIKE :search ORDER BY sec_firm_order"
+                f"WHERE firm_nm ILIKE :search ORDER BY firm_id"
             ),
             {"search": f"%{search}%"},
         ).fetchall()
     else:
         rows = db.execute(
-            text(f"SELECT {col_str} FROM tbm_sec_firm_info ORDER BY sec_firm_order")
+            text(f"SELECT {col_str} FROM tbm_sec_firm_info ORDER BY firm_id")
         ).fetchall()
 
     return [FirmInfoOut(**_row_to_dict(db_cols, pydantic_fields, r)) for r in rows]
@@ -191,7 +191,7 @@ async def get_firm(
     row = db.execute(
         text(
             f"SELECT {col_str} FROM tbm_sec_firm_info "
-            f"WHERE sec_firm_order = :oid"
+            f"WHERE firm_id = :oid"
         ),
         {"oid": sec_firm_order},
     ).first()
@@ -208,7 +208,7 @@ async def create_firm(
 ):
     """증권사 신규 등록"""
     existing = db.execute(
-        text("SELECT 1 FROM tbm_sec_firm_info WHERE sec_firm_order = :oid"),
+        text("SELECT 1 FROM tbm_sec_firm_info WHERE firm_id = :oid"),
         {"oid": body.sec_firm_order},
     ).first()
     if existing:
@@ -231,7 +231,7 @@ async def create_firm(
 
     db.execute(
         text(
-            f"INSERT INTO tbm_sec_firm_info (sec_firm_order, {', '.join(insert_cols)}) "
+            f"INSERT INTO tbm_sec_firm_info (firm_id, {', '.join(insert_cols)}) "
             f"VALUES (:oid, {', '.join(insert_params)})"
         ),
         {"oid": body.sec_firm_order, **params},
@@ -249,7 +249,7 @@ async def update_firm(
 ):
     """증권사 정보 수정"""
     existing = db.execute(
-        text("SELECT 1 FROM tbm_sec_firm_info WHERE sec_firm_order = :oid"),
+        text("SELECT 1 FROM tbm_sec_firm_info WHERE firm_id = :oid"),
         {"oid": sec_firm_order},
     ).first()
     if not existing:
@@ -270,7 +270,7 @@ async def update_firm(
 
     if updates:
         db.execute(
-            text(f"UPDATE tbm_sec_firm_info SET {', '.join(updates)} WHERE sec_firm_order = :oid"),
+            text(f"UPDATE tbm_sec_firm_info SET {', '.join(updates)} WHERE firm_id = :oid"),
             params,
         )
         db.commit()
@@ -285,8 +285,8 @@ async def delete_firm(
     db: Session = Depends(get_db),
 ):
     """증권사 삭제"""
-    db.execute(text("DELETE FROM tbm_sec_firm_board_info WHERE sec_firm_order = :oid"), {"oid": sec_firm_order})
-    result = db.execute(text("DELETE FROM tbm_sec_firm_info WHERE sec_firm_order = :oid"), {"oid": sec_firm_order})
+    db.execute(text("DELETE FROM tbm_sec_firm_board_info WHERE firm_id = :oid"), {"oid": sec_firm_order})
+    result = db.execute(text("DELETE FROM tbm_sec_firm_info WHERE firm_id = :oid"), {"oid": sec_firm_order})
     db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Firm not found")
@@ -308,7 +308,7 @@ async def list_firm_boards(
     rows = db.execute(
         text(
             f"SELECT {col_str} FROM tbm_sec_firm_board_info "
-            f"WHERE sec_firm_order = :oid ORDER BY article_board_order"
+            f"WHERE firm_id = :oid ORDER BY board_id"
         ),
         {"oid": sec_firm_order},
     ).fetchall()
@@ -324,7 +324,7 @@ async def create_firm_board(
 ):
     """증권사 게시판 추가"""
     firm = db.execute(
-        text("SELECT 1 FROM tbm_sec_firm_info WHERE sec_firm_order = :oid"), {"oid": sec_firm_order}
+        text("SELECT 1 FROM tbm_sec_firm_info WHERE firm_id = :oid"), {"oid": sec_firm_order}
     ).first()
     if not firm:
         raise HTTPException(status_code=404, detail="Firm not found")
@@ -332,7 +332,7 @@ async def create_firm_board(
     existing = db.execute(
         text(
             "SELECT 1 FROM tbm_sec_firm_board_info "
-            "WHERE sec_firm_order = :oid AND article_board_order = :boid"
+            "WHERE firm_id = :oid AND board_id = :boid"
         ),
         {"oid": sec_firm_order, "boid": body.article_board_order},
     ).first()
@@ -371,7 +371,7 @@ async def update_firm_board(
     existing = db.execute(
         text(
             "SELECT 1 FROM tbm_sec_firm_board_info "
-            "WHERE sec_firm_order = :oid AND article_board_order = :boid"
+            "WHERE firm_id = :oid AND board_id = :boid"
         ),
         {"oid": sec_firm_order, "boid": article_board_order},
     ).first()
@@ -395,7 +395,7 @@ async def update_firm_board(
         db.execute(
             text(
                 f"UPDATE tbm_sec_firm_board_info SET {', '.join(updates)} "
-                f"WHERE sec_firm_order = :oid AND article_board_order = :boid"
+                f"WHERE firm_id = :oid AND board_id = :boid"
             ),
             params,
         )
@@ -415,7 +415,7 @@ async def delete_firm_board(
     result = db.execute(
         text(
             "DELETE FROM tbm_sec_firm_board_info "
-            "WHERE sec_firm_order = :oid AND article_board_order = :boid"
+            "WHERE firm_id = :oid AND board_id = :boid"
         ),
         {"oid": sec_firm_order, "boid": article_board_order},
     )

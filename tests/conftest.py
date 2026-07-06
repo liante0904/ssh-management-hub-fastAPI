@@ -109,7 +109,7 @@ class MockDBSession:
             elif " delete " in _w:
                 self._committed = True
                 return MockResult([MockRow(1)])
-            elif "where sec_firm_order = " in stmt_lower.replace(" ", ""):
+            elif "where firm_id = " in stmt_lower.replace(" ", ""):
                 return MockResult([MockRow(1, "Test Securities", "Y", None, "N")])
             elif "select 1" in stmt_lower:
                 return MockResult([MockRow(1)])
