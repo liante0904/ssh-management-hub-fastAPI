@@ -202,6 +202,27 @@ class DiagnoseResponse(BaseModel):
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
+def _table_columns(db: Session, table_name: str) -> set[str]:
+    return {
+        row[0]
+        for row in db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :table_name"
+            ),
+            {"table_name": table_name},
+        ).fetchall()
+    }
+
+
+def _column_expression(
+    db: Session, table_name: str, column: str, alias: str = ""
+) -> str:
+    """Return a qualified column or NULL when an optional column is absent."""
+    prefix = f"{alias}." if alias else ""
+    return f"{prefix}{column}" if column in _table_columns(db, table_name) else "NULL"
+
+
 def _report_url_expression(db: Session, alias: str = "") -> str:
     """Return a URL expression compatible with the live reports schema.
 
@@ -209,15 +230,7 @@ def _report_url_expression(db: Session, alias: str = "") -> str:
     retain the downloadable URL as ``pdf_url``.  Keep the API field stable
     without emitting SQL that references a column which is not installed.
     """
-    columns = {
-        row[0]
-        for row in db.execute(
-            text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'tbl_sec_reports'"
-            )
-        ).fetchall()
-    }
+    columns = _table_columns(db, "tbl_sec_reports")
     prefix = f"{alias}." if alias else ""
     for column in ("article_url", "pdf_url", "telegram_url"):
         if column in columns:
@@ -416,8 +429,11 @@ async def list_pdf_archive(
     if pdf_sync_status is not None:
         where.append("a.pdf_sync_status = :pdf_sync_status")
         params["pdf_sync_status"] = pdf_sync_status
+    archive_download_status = _column_expression(
+        db, "tbl_sec_reports_pdf_archive", "download_status_yn", "a"
+    )
     if download_status_yn:
-        where.append("a.download_status_yn = :download_status_yn")
+        where.append(f"{archive_download_status} = :download_status_yn")
         params["download_status_yn"] = download_status_yn
     if search:
         where.append("r.article_title ILIKE :search")
@@ -462,7 +478,7 @@ async def list_pdf_archive(
         text(
             f"SELECT r.report_id, r.firm_nm, r.article_title as title, to_char(r.report_date, 'YYYYMMDD') as reg_dt, {report_url} as article_url, "
             f"a.author, a.file_name, a.file_size, a.page_count, "
-            f"a.archive_status, a.storage_backend, a.download_status_yn, "
+            f"a.archive_status, a.storage_backend, {archive_download_status} as download_status_yn, "
             f"a.sync_status, a.pdf_sync_status, a.retry_count, "
             f"a.has_text, a.is_encrypted, "
             f"to_char(a.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, "
