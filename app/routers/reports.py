@@ -290,7 +290,7 @@ async def list_reports(
     rows = db.execute(
         text(
             f"SELECT report_id, firm_nm, article_title, {report_url} as article_url, writer, "
-            f"save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
+            f"to_char(save_at, 'YYYY-MM-DD HH24:MI:SS') as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             f"download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             f"FROM tbl_sec_reports {where_clause} "
             f"ORDER BY {sort_col} LIMIT :limit OFFSET :offset"
@@ -699,7 +699,7 @@ async def get_report(
     row = db.execute(
         text(
             f"SELECT report_id, firm_nm, article_title, {report_url} as article_url, writer, "
-            "save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
+            "to_char(save_at, 'YYYY-MM-DD HH24:MI:SS') as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             "download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             "FROM tbl_sec_reports WHERE report_id = :rid"
         ),
