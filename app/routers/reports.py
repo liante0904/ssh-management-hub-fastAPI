@@ -202,6 +202,29 @@ class DiagnoseResponse(BaseModel):
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
+def _report_url_expression(db: Session, alias: str = "") -> str:
+    """Return a URL expression compatible with the live reports schema.
+
+    ``article_url`` was removed from ``tbl_sec_reports`` while newer sources
+    retain the downloadable URL as ``pdf_url``.  Keep the API field stable
+    without emitting SQL that references a column which is not installed.
+    """
+    columns = {
+        row[0]
+        for row in db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'tbl_sec_reports'"
+            )
+        ).fetchall()
+    }
+    prefix = f"{alias}." if alias else ""
+    for column in ("article_url", "pdf_url", "telegram_url"):
+        if column in columns:
+            return f"{prefix}{column}"
+    return "NULL"
+
+
 # ── tbl_sec_reports ────────────────────────────────────────────────────────
 
 @router.get("", response_model=ReportListOut)
@@ -245,6 +268,7 @@ async def list_reports(
         "report id DESC": "report_id DESC", "report id ASC": "report_id ASC",
     }
     sort_col = _sort_map.get(_normalized, "save_at DESC")
+    report_url = _report_url_expression(db)
 
     total_row = db.execute(text(f"SELECT COUNT(*) FROM tbl_sec_reports {where_clause}"), params).scalar()
     total = total_row or 0
@@ -252,7 +276,7 @@ async def list_reports(
     offset = (page - 1) * page_size
     rows = db.execute(
         text(
-            f"SELECT report_id, firm_nm, article_title, article_url, writer, "
+            f"SELECT report_id, firm_nm, article_title, {report_url} as article_url, writer, "
             f"save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             f"download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             f"FROM tbl_sec_reports {where_clause} "
@@ -410,6 +434,7 @@ async def list_pdf_archive(
         "report date DESC": "r.report_date DESC", "report date ASC": "r.report_date ASC",
     }
     sort_col = _sort_map.get(_normalized, "r.report_id DESC")
+    report_url = _report_url_expression(db, "r")
 
     # FROM 절: reports(모든 레코드) + LEFT JOIN archive(시도된 것만)
     FROM = "FROM tbl_sec_reports r LEFT JOIN tbl_sec_reports_pdf_archive a ON r.report_id = a.report_id"
@@ -435,7 +460,7 @@ async def list_pdf_archive(
 
     rows = db.execute(
         text(
-            f"SELECT r.report_id, r.firm_nm, r.article_title as title, to_char(r.report_date, 'YYYYMMDD') as reg_dt, r.article_url, "
+            f"SELECT r.report_id, r.firm_nm, r.article_title as title, to_char(r.report_date, 'YYYYMMDD') as reg_dt, {report_url} as article_url, "
             f"a.author, a.file_name, a.file_size, a.page_count, "
             f"a.archive_status, a.storage_backend, a.download_status_yn, "
             f"a.sync_status, a.pdf_sync_status, a.retry_count, "
@@ -595,8 +620,9 @@ async def diagnose_pdf_download(
     """PDF 원본 URL 접속 진단 — 서버에서 직접 URL에 접근하여 응답 상태 확인"""
     import time
 
+    report_url = _report_url_expression(db)
     row = db.execute(
-        text("SELECT article_url FROM tbl_sec_reports WHERE report_id = :rid"),
+        text(f"SELECT {report_url} as article_url FROM tbl_sec_reports WHERE report_id = :rid"),
         {"rid": report_id},
     ).first()
 
@@ -653,9 +679,10 @@ async def get_report(
     db: Session = Depends(get_db),
 ):
     """레포트 상세 조회"""
+    report_url = _report_url_expression(db)
     row = db.execute(
         text(
-            "SELECT report_id, firm_nm, article_title, article_url, writer, "
+            f"SELECT report_id, firm_nm, article_title, {report_url} as article_url, writer, "
             "save_at as save_time, to_char(report_date, 'YYYYMMDD') as reg_dt, mkt_tp, "
             "download_status_yn, sync_status, pdf_sync_status, gemini_summary, summary_time, summary_model "
             "FROM tbl_sec_reports WHERE report_id = :rid"
