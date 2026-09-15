@@ -10,10 +10,13 @@ Management Hub FastAPI — 통합 관리 API 서버
 """
 import logging
 import os
+import hmac
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from jose import jwt
 from pydantic import BaseModel
 
@@ -23,6 +26,24 @@ logger = logging.getLogger("management-hub")
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 JWT_ALGORITHM = "HS256"
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "https://ssh-management-hub.netlify.app,http://localhost:5175",
+    ).split(",")
+    if origin.strip()
+]
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
 
 class LoginRequest(BaseModel):
@@ -45,11 +66,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # 라우터 등록
 app.include_router(auth_router)
@@ -71,8 +93,13 @@ async def login(body: LoginRequest):
     if not JWT_SECRET_KEY:
         logger.error("Login failed: JWT_SECRET_KEY not configured")
         raise HTTPException(status_code=503, detail="JWT secret not configured")
-    if body.secret != JWT_SECRET_KEY:
-        logger.warning(f"Login failed: Invalid secret key attempt. (Expected first 4 chars: {JWT_SECRET_KEY[:4]}...)")
+    if not hmac.compare_digest(body.secret, JWT_SECRET_KEY):
+        logger.warning("Login failed: Invalid secret key attempt")
         raise HTTPException(status_code=401, detail="Invalid secret key")
-    token = jwt.encode({"sub": "admin", "type": "access"}, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    now = datetime.now(timezone.utc)
+    token = jwt.encode(
+        {"sub": "admin", "type": "access", "iat": int(now.timestamp()), "exp": int((now + timedelta(hours=8)).timestamp())},
+        JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
     return {"access_token": token, "token_type": "bearer"}

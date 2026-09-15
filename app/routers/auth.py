@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,7 +40,7 @@ class TelegramUser(BaseModel):
     photo_url: str | None = None
     auth_date: int = 0
     hash: str = ""
-    id_token: str | None = None  # OIDC 방식 토큰 (있으면 hash 검증 스킵)
+    id_token: str | None = None  # 호환용 입력 필드; 검증되지 않은 토큰은 인증에 사용하지 않음
 
 
 def verify_telegram(data: dict) -> tuple[bool, str]:
@@ -50,6 +51,12 @@ def verify_telegram(data: dict) -> tuple[bool, str]:
     check_hash = data.get("hash")
     if not check_hash:
         return False, "Missing Telegram hash"
+    auth_date = data.get("auth_date", 0)
+    now = time.time()
+    if not isinstance(auth_date, (int, float)) or auth_date <= 0:
+        return False, "Missing Telegram auth_date"
+    if auth_date - now > 60 or now - auth_date > 86400:
+        return False, "Telegram auth data is expired"
 
     # hash 계산에 사용할 데이터만 추출 (None이나 빈 값 제외, hash 필드 제외)
     data_list = []
@@ -75,21 +82,19 @@ def verify_telegram(data: dict) -> tuple[bool, str]:
 
 def create_jwt(user_id: int) -> str:
     from jose import jwt
-    return jwt.encode({"sub": str(user_id), "type": "access"}, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    now = datetime.now(timezone.utc)
+    return jwt.encode({"sub": str(user_id), "type": "access", "iat": int(now.timestamp()), "exp": int((now + timedelta(hours=8)).timestamp())}, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
 @router.post("/telegram")
 async def auth_telegram(user_data: TelegramUser, db: Session = Depends(get_db)):
     """Telegram 인증 → JWT 발급 (관리자만 허용)"""
 
-    # 1. 인증 검증: OIDC id_token 있으면 hash 검증 스킵, 없으면 hash 검증
-    if user_data.id_token:
-        logger.info("OIDC auth accepted for user_id=%s", user_data.id)
-    else:
-        is_valid, reason = verify_telegram(user_data.model_dump())
-        if not is_valid:
-            logger.warning("Telegram auth rejected: user_id=%s, reason=%s", user_data.id, reason)
-            raise HTTPException(status_code=401, detail=f"Telegram Auth Failed: {reason}")
+    # 1. Telegram hash is always required; an unverified OIDC token is not an authenticator.
+    is_valid, reason = verify_telegram(user_data.model_dump(exclude={"id_token"}))
+    if not is_valid:
+        logger.warning("Telegram auth rejected: user_id=%s, reason=%s", user_data.id, reason)
+        raise HTTPException(status_code=401, detail=f"Telegram Auth Failed: {reason}")
 
     # 2. DB upsert
     existing = db.execute(
@@ -145,14 +150,15 @@ async def emergency_login(body: LoginRequest):
     """비상 JWT Secret Key 로그인"""
     if not JWT_SECRET_KEY:
         raise HTTPException(status_code=503, detail="JWT secret not configured")
-    if body.secret != JWT_SECRET_KEY:
+    if not hmac.compare_digest(body.secret, JWT_SECRET_KEY):
         logger.warning("Emergency login rejected: invalid secret")
         raise HTTPException(status_code=401, detail="Invalid secret key")
 
     # admin용 JWT 발급 (sub="admin"으로 admin bypass)
     from jose import jwt as jose_jwt
+    now = datetime.now(timezone.utc)
     token = jose_jwt.encode(
-        {"sub": "admin", "type": "access"},
+        {"sub": "admin", "type": "access", "iat": int(now.timestamp()), "exp": int((now + timedelta(hours=8)).timestamp())},
         JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
     )
