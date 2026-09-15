@@ -11,12 +11,13 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..rate_limit import limiter
 from .admin import JWT_SECRET_KEY, JWT_ALGORITHM
 
 load_dotenv()
@@ -128,12 +129,13 @@ async def auth_telegram(user_data: TelegramUser, db: Session = Depends(get_db)):
         {"uid": user_data.id},
     ).first()
 
+    is_active = row[1] == "active" if row else False
     is_admin = row[2] if row else False
 
-    if not is_admin:
+    if not is_active or not is_admin:
         raise HTTPException(
             status_code=403,
-            detail="관리자 권한이 필요합니다. 관리자에게 승인을 요청하세요.",
+            detail="활성화된 관리자 권한이 필요합니다. 관리자에게 승인을 요청하세요.",
         )
 
     # 4. JWT 발급
@@ -146,7 +148,8 @@ async def auth_telegram(user_data: TelegramUser, db: Session = Depends(get_db)):
 
 
 @router.post("/login")
-async def emergency_login(body: LoginRequest):
+@limiter.limit("5/minute")
+async def emergency_login(request: Request, body: LoginRequest):
     """비상 JWT Secret Key 로그인"""
     if not JWT_SECRET_KEY:
         raise HTTPException(status_code=503, detail="JWT secret not configured")

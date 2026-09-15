@@ -14,13 +14,17 @@ import hmac
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from jose import jwt
 from pydantic import BaseModel
+from slowapi.errors import RateLimitExceeded
+from slowapi.extension import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 
 from .routers import admin_router, auth_router, backfill_router, firms_router, reports_router, users_router
+from .rate_limit import limiter
 
 logger = logging.getLogger("management-hub")
 
@@ -64,6 +68,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGINS,
@@ -88,7 +96,8 @@ async def health_check():
 
 
 @app.post("/api/auth/login")
-async def login(body: LoginRequest):
+@limiter.limit("5/minute")
+async def login(request: Request, body: LoginRequest):
     """JWT Secret Key를 입력받아 admin 토큰 발급"""
     if not JWT_SECRET_KEY:
         logger.error("Login failed: JWT_SECRET_KEY not configured")

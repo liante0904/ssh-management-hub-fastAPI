@@ -73,7 +73,7 @@ async def get_current_admin(
 
     try:
         result = db.execute(
-            text("SELECT id, is_admin FROM tbl_sec_reports_telegram_users WHERE id = :uid"),
+            text("SELECT id, status, is_admin FROM tbl_sec_reports_telegram_users WHERE id = :uid"),
             {"uid": int(user_id)},
         ).first()
     except Exception as e:
@@ -82,9 +82,9 @@ async def get_current_admin(
 
     if result is None:
         raise HTTPException(status_code=401, detail="User not found")
-    if not result.is_admin:
+    if result[1] != "active" or not result[2]:
         raise HTTPException(status_code=403, detail="Admin access required")
-    return {"user_id": result.id, "is_admin": result.is_admin}
+    return {"user_id": result[0], "is_admin": result[2]}
 
 
 # ---------------------------------------------------------------------------
