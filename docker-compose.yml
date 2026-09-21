@@ -23,8 +23,14 @@ services:
       - OCI2_SSH_TIMEOUT=${OCI2_SSH_TIMEOUT:-5}
     restart: always
     networks:
-      - public-net
+      - db-main-net
+      - management-net
+      - egress-net
 
 networks:
-  public-net:
+  db-main-net:
+    external: true
+  management-net:
+    external: true
+  egress-net:
     external: true

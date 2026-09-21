@@ -11,13 +11,12 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..rate_limit import limiter
 from .admin import JWT_SECRET_KEY, JWT_ALGORITHM
 
 load_dotenv()
@@ -27,10 +26,6 @@ logger = logging.getLogger("management-hub.auth")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-class LoginRequest(BaseModel):
-    secret: str
 
 
 class TelegramUser(BaseModel):
@@ -145,33 +140,6 @@ async def auth_telegram(user_data: TelegramUser, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user": {"id": row[0], "status": row[1], "is_admin": row[2]},
     }
-
-
-@router.post("/login")
-@limiter.limit("5/minute")
-async def emergency_login(request: Request, body: LoginRequest):
-    """비상 JWT Secret Key 로그인"""
-    if not JWT_SECRET_KEY:
-        raise HTTPException(status_code=503, detail="JWT secret not configured")
-    if not hmac.compare_digest(body.secret, JWT_SECRET_KEY):
-        logger.warning("Emergency login rejected: invalid secret")
-        raise HTTPException(status_code=401, detail="Invalid secret key")
-
-    # admin용 JWT 발급 (sub="admin"으로 admin bypass)
-    from jose import jwt as jose_jwt
-    now = datetime.now(timezone.utc)
-    token = jose_jwt.encode(
-        {"sub": "admin", "type": "access", "iat": int(now.timestamp()), "exp": int((now + timedelta(hours=8)).timestamp())},
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM,
-    )
-    logger.info("Emergency admin login successful")
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {"id": 0, "first_name": "Admin", "is_admin": True},
-    }
-
 
 @router.get("/me")
 async def auth_me(

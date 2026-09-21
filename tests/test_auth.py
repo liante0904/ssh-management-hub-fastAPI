@@ -67,13 +67,7 @@ class TestAuthMe:
         assert res.status_code in (200, 404)
 
 
-class TestLoginEndpoint:
-    def test_login_invalid_secret(self, client_unauthorized: TestClient):
-        """잘못된 JWT secret → 401"""
-        res = client_unauthorized.post("/api/auth/login", json={"secret": "wrong"})
-        assert res.status_code in (401, 503)
-
-    def test_login_no_secret(self, client_unauthorized: TestClient):
-        """빈 secret → 422"""
-        res = client_unauthorized.post("/api/auth/login", json={})
-        assert res.status_code == 422
+def test_secret_key_login_route_removed(client_unauthorized: TestClient):
+    """JWT Secret Key 로그인 우회 경로는 더 이상 노출하지 않는다."""
+    res = client_unauthorized.post("/api/auth/login", json={"secret": "wrong"})
+    assert res.status_code == 404

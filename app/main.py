@@ -10,15 +10,11 @@ Management Hub FastAPI — 통합 관리 API 서버
 """
 import logging
 import os
-import hmac
-from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from jose import jwt
-from pydantic import BaseModel
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
@@ -28,8 +24,6 @@ from .rate_limit import limiter
 
 logger = logging.getLogger("management-hub")
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
-JWT_ALGORITHM = "HS256"
 CORS_ALLOW_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -48,10 +42,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("Cache-Control", "no-store")
         return response
-
-
-class LoginRequest(BaseModel):
-    secret: str
 
 
 @asynccontextmanager
@@ -93,22 +83,3 @@ app.include_router(backfill_router)
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "management-hub"}
-
-
-@app.post("/api/auth/login")
-@limiter.limit("5/minute")
-async def login(request: Request, body: LoginRequest):
-    """JWT Secret Key를 입력받아 admin 토큰 발급"""
-    if not JWT_SECRET_KEY:
-        logger.error("Login failed: JWT_SECRET_KEY not configured")
-        raise HTTPException(status_code=503, detail="JWT secret not configured")
-    if not hmac.compare_digest(body.secret, JWT_SECRET_KEY):
-        logger.warning("Login failed: Invalid secret key attempt")
-        raise HTTPException(status_code=401, detail="Invalid secret key")
-    now = datetime.now(timezone.utc)
-    token = jwt.encode(
-        {"sub": "admin", "type": "access", "iat": int(now.timestamp()), "exp": int((now + timedelta(hours=8)).timestamp())},
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM,
-    )
-    return {"access_token": token, "token_type": "bearer"}
